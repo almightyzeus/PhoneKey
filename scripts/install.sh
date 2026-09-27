@@ -43,7 +43,7 @@ Creates:
   /run/phonekey/                socket directory (created by systemd at runtime)
 Runs:
   systemctl daemon-reload
-  systemctl enable --now phonekeyd
+  systemctl enable phonekeyd && systemctl restart phonekeyd   (restart also applies updates)
 
 Does NOT change: PAM configuration (/etc/pam.d), sudo, lock screen, login,
 /etc/bluetooth, D-Bus configuration, or installed packages.
@@ -89,7 +89,8 @@ launcher "$BIN" phonekey.cli
 run install -m 0644 "$PAM_MODULE" "$PAM_MODULE_DIR/pam_phonekey.so"
 run install -m 0644 "$REPO/linux/systemd/phonekeyd.service" "$UNIT"
 run systemctl daemon-reload
-run systemctl enable --now phonekeyd
+run systemctl enable phonekeyd
+run systemctl restart phonekeyd
 
 echo
 if (( DRY_RUN )); then
