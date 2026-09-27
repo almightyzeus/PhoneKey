@@ -20,7 +20,7 @@ run() {
 }
 
 if grep -qs pam_phonekey /etc/pam.d/*; then
-    echo "PhoneKey is still enabled in PAM (Phase 5). Run 'sudo phonekey disable' first:" >&2
+    echo "PhoneKey is still enabled in PAM. Run 'sudo phonekey disable' first:" >&2
     grep -ls pam_phonekey /etc/pam.d/* >&2
     exit 1
 fi
@@ -31,6 +31,7 @@ run systemctl disable --now phonekeyd
 run rm -f /etc/systemd/system/phonekeyd.service
 run systemctl daemon-reload
 run rm -rf /usr/lib/phonekey
+run rm -f /usr/lib/x86_64-linux-gnu/security/pam_phonekey.so
 run rm -f /usr/bin/phonekey
 if (( PURGE )); then
     run rm -rf /var/lib/phonekey

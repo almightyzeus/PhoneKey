@@ -45,7 +45,7 @@ Android phone (authenticator, BLE peripheral)       Linux Mint laptop (verifier,
 - **Python daemon.** It uses only packages already on Mint
   (`python3-cryptography`, `python3-dbus`, `python3-gi`), and it is
   memory-safe for parsing untrusted BLE input.
-- **Thin C PAM module (Phase 5).** Keeps crypto and parsing out of the
+- **Thin C PAM module.** Keeps crypto and parsing out of the
   `sudo`/`cinnamon-screensaver` processes (SECURITY.md D‑2).
 
 ## 2. Processes, users, files
@@ -54,44 +54,47 @@ Android phone (authenticator, BLE peripheral)       Linux Mint laptop (verifier,
 |---|---|---|
 | `/usr/lib/phonekey/` | root 0755 | Daemon and CLI Python package |
 | `/usr/bin/phonekey` | root 0755 | CLI entry point |
-| `/lib/x86_64-linux-gnu/security/pam_phonekey.so` | root 0644 | PAM module (Phase 5) |
-| `/etc/phonekey/phonekey.conf` | root 0644 | Timeouts, rate limits, log level |
+| `/usr/lib/x86_64-linux-gnu/security/pam_phonekey.so` | root 0644 | PAM module. Installed by `install.sh`, used only after `phonekey enable` |
 | `/var/lib/phonekey/` | phonekey 0700 | `verifier_key.pem` (0600), `devices/<device_id>.json` |
 | `/run/phonekey/phonekey.sock` | phonekey, socket 0666 in dir 0755 | IPC. Authorization is by SO_PEERCRED, not file mode. |
-| `/var/backups/phonekey/` | root 0700 | Pristine copies of PAM files before `phonekey enable` (Phase 5) |
-| `/etc/systemd/system/phonekeyd.service` | root 0644 | `User=phonekey`, `SupplementaryGroups=bluetooth`, hardening options (`ProtectSystem=strict`, `NoNewPrivileges`, …) |
+| `/var/backups/phonekey/` | root 0700 | A copy of each PAM file before `phonekey enable`/`disable` changes it |
+| `/etc/systemd/system/phonekeyd.service` | root 0644 | `User=phonekey`, hardening options (`ProtectSystem=strict`, `NoNewPrivileges`, no capabilities, `AF_UNIX`/`AF_BLUETOOTH` only) |
 
 The daemon never runs as root. Everything above is installed only by
-`scripts/install.sh` (Phase 3+) after showing the exact list of changes.
+`scripts/install.sh` after showing the exact list of changes. PAM files are
+changed only by `phonekey enable`, separately.
 
 ### Local IPC (Linux-only, not part of the protocol)
 
-- **PAM → daemon.** One line in, one line out:
-  - in: `AUTH <account> <service> <tty>\n`
-  - out: `OK`, `UNAVAILABLE`, `DENIED`, or `ERROR`
+All clients speak JSON lines on the Unix socket. The daemon authorizes by the
+caller's SO_PEERCRED uid; callers that care (the PAM module) check that the
+socket's owner is `phonekey`.
 
-  The daemon rejects the request unless the caller's uid is 0 or the uid of
-  `<account>`. The module rejects the connection unless the peer uid is
-  `phonekey`.
-- **CLI → daemon.** JSON lines: `status`, `devices`, `test`, `pair`, `unpair`.
-  Admin operations require peer uid 0.
-- `phonekey unpair` and `phonekey disable` also work when the daemon is
-  stopped, by editing files directly as root.
-
-### PAM result mapping (Phase 5)
-
-| Daemon reply | PAM return | Effect with `auth sufficient` |
+| Request | Who may send it | Replies |
 |---|---|---|
-| `OK` | `PAM_SUCCESS` | Authenticated, stack stops |
-| `UNAVAILABLE` (no phone, daemon down, timeout) | `PAM_AUTHINFO_UNAVAIL` | Continue → password prompt |
-| `DENIED` / `ERROR` | `PAM_AUTH_ERR` | Continue → password prompt |
+| `{"op": "status"}` | anyone (non-root callers see only their own phones) | one `{"result": "ok", …}` |
+| `{"op": "auth", "action": "sudo", "account": A}` | root, or the user *A* | `{"event": "sent", …}` when the phone was asked, then `{"result": "ok" \| "denied" \| "unavailable" \| "error", "reason": …}` |
+| `{"op": "pair", "account": A}` | root (system mode) or the daemon's user for itself (development) | `waiting`, `confirm` (numeric code; the CLI answers `{"confirm": true}`), then `{"result": "paired", …}` |
 
-## 3. Sequence: `sudo` with PhoneKey (Phase 5 target)
+`action` is a key of a fixed table (`test`, `sudo`, `unlock`, `login`). Clients
+cannot send free text for the phone to display. `phonekey unpair` and
+`phonekey disable` edit files directly as root and work with the daemon
+stopped.
+
+### PAM result mapping
+
+| Daemon result | PAM return | Effect with `auth sufficient` |
+|---|---|---|
+| `ok` | `PAM_SUCCESS` | Authenticated, stack stops |
+| `denied` (Deny tapped, biometric failed) | `PAM_AUTH_ERR` | Continue → password prompt |
+| `unavailable`, `error`, no daemon, wrong socket owner, 35 s timeout | `PAM_AUTHINFO_UNAVAIL` | Continue → password prompt |
+
+## 3. Sequence: `sudo` with PhoneKey
 
 ```
 user         sudo+pam_phonekey      phonekeyd                 phone app          Keystore
  │ sudo apt …   │                      │                          │                  │
- │─────────────►│ AUTH chinuzeus sudo  │                          │                  │
+ │─────────────►│ auth sudo chinuzeus  │                          │                  │
  │              │─────────────────────►│ phone connected? yes     │                  │
  │ "Approve on  │                      │ new request_id+challenge │                  │
  │  your phone" │                      │ sign AUTH_REQUEST ──────►│ verify verifier  │
@@ -100,11 +103,11 @@ user         sudo+pam_phonekey      phonekeyd                 phone app         
  │              │                      │                          │◄── sign ─────────┤
  │              │                      │◄──── AUTH_RESPONSE ──────│                  │
  │              │                      │ verify + consume         │                  │
- │              │◄────────── OK ───────│                          │                  │
+ │              │◄────── result ok ────│                          │                  │
  │  command runs│                      │                          │                  │
 ```
 
-When the phone is absent, the daemon answers `UNAVAILABLE` at once, and sudo
+When the phone is absent, the daemon answers `unavailable` at once, and sudo
 shows its usual `[sudo] password for …` prompt.
 
 ## 4. Repository layout
@@ -115,7 +118,7 @@ phonekey/
 ├── linux/
 │   ├── daemon/phonekey/  Python package: codec, crypto, registry,
 │   │                     verifier, simulator, cli (phonekeyd in P3) — Phase 2/3
-│   ├── pam/              pam_phonekey.c + Makefile              — Phase 5
+│   ├── pam/              pam_phonekey.c, test harness, Makefile  — Phase 5
 │   └── cli/phonekey      `phonekey` launcher                    — Phase 2
 ├── protocol/
 │   ├── PROTOCOL.md       platform-independent protocol

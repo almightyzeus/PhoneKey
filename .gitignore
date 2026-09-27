@@ -30,3 +30,5 @@ __pycache__/
 .vscode/
 *.swp
 .DS_Store
+linux/pam/pam_phonekey.so
+linux/pam/pam_harness

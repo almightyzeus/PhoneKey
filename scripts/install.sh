@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Installs the PhoneKey daemon and CLI as a system service.
 #
-# Does NOT touch PAM, sudo, the lock screen, login, or Bluetooth configuration.
+# Installs pam_phonekey.so but does NOT reference it anywhere: PAM, sudo, the lock
+# screen, login and Bluetooth configuration are untouched. PhoneKey is used for
+# sudo only after a separate, explicit 'sudo phonekey enable sudo'.
 # Every change is listed first; nothing happens without typing "install".
 # Undo with scripts/uninstall.sh.
 #
@@ -17,6 +19,14 @@ LIB=/usr/lib/phonekey
 BIN=/usr/bin/phonekey
 UNIT=/etc/systemd/system/phonekeyd.service
 USER_NAME=phonekey
+PAM_MODULE_DIR=/usr/lib/x86_64-linux-gnu/security
+PAM_MODULE="$REPO/linux/pam/pam_phonekey.so"
+
+if [[ ! -f "$PAM_MODULE" ]]; then
+    echo "Build the PAM module first, as your normal user (see linux/pam/Makefile):" >&2
+    echo "  make -C linux/pam" >&2
+    exit 1
+fi
 
 plan() {
     cat <<PLAN
@@ -28,14 +38,15 @@ Creates:
   $LIB/phonekeyd          daemon launcher
   $BIN                    CLI launcher
   $UNIT   hardened systemd unit, runs as '$USER_NAME'
+  $PAM_MODULE_DIR/pam_phonekey.so   PAM module (installed, NOT enabled)
   /var/lib/phonekey/            state (created by systemd, owner $USER_NAME, 0700)
   /run/phonekey/                socket directory (created by systemd at runtime)
 Runs:
   systemctl daemon-reload
   systemctl enable --now phonekeyd
 
-Does NOT change: PAM (/etc/pam.d), sudo, lock screen, login, /etc/bluetooth,
-D-Bus configuration, or installed packages.
+Does NOT change: PAM configuration (/etc/pam.d), sudo, lock screen, login,
+/etc/bluetooth, D-Bus configuration, or installed packages.
 Your development pairing (~/.local/state/phonekey-dev) is not copied; pair
 again with 'sudo phonekey pair' after installing.
 Undo: sudo "$REPO/scripts/uninstall.sh"
@@ -75,6 +86,7 @@ launcher() {  # launcher <path> <python module entry>
 }
 launcher "$LIB/phonekeyd" phonekey.daemon
 launcher "$BIN" phonekey.cli
+run install -m 0644 "$PAM_MODULE" "$PAM_MODULE_DIR/pam_phonekey.so"
 run install -m 0644 "$REPO/linux/systemd/phonekeyd.service" "$UNIT"
 run systemctl daemon-reload
 run systemctl enable --now phonekeyd
@@ -84,4 +96,6 @@ if (( DRY_RUN )); then
     echo "Dry run: nothing was changed."
 else
     echo "Installed. Check with: phonekey status   and   phonekey logs"
+    echo "Next: stop the development daemon if it runs, then 'sudo phonekey pair'."
+    echo "PAM is not enabled; 'sudo phonekey enable sudo --dry-run' shows that step."
 fi

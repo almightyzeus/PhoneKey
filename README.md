@@ -5,9 +5,9 @@ for Linux: approve `sudo` and screen unlock with a fingerprint on your phone,
 over Bluetooth Low Energy. There is no cloud, no internet, and no shared
 password.
 
-> ⚠️ **Status: pre-alpha, Phase 4 of 7.** Pairing and end-to-end authentication
-> over BLE work (`phonekey pair`, `phonekey test`). Not yet done: PAM (sudo, lock
-> screen, login).
+> ⚠️ **Status: pre-alpha, Phase 5 of 7.** Pairing, end-to-end authentication
+> over BLE, and `sudo` through PAM (opt-in, password always still works). Not
+> yet done: lock screen and login.
 > PhoneKey is **not production-secure**. Always keep password authentication
 > enabled.
 

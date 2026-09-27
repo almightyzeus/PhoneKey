@@ -213,15 +213,38 @@ class BleCentral:
         self._adapter.StartDiscovery()
 
     def _discovery_watchdog(self) -> bool:
-        """BlueZ ends our scan when Bluetooth is toggled or devices are removed; restart it."""
-        props = dbus.Interface(self._bus.get_object(BLUEZ, self._adapter_path), PROPERTIES)
+        """BlueZ ends our scan when Bluetooth is toggled or devices are removed; restart it.
+
+        Also follows the adapter when it disappears (a USB adapter that resets
+        comes back as a new hciN)."""
         try:
+            if self._adapter_path not in self._adapter_paths():
+                self._switch_adapter()
+                return True
+            props = dbus.Interface(self._bus.get_object(BLUEZ, self._adapter_path), PROPERTIES)
             if props.Get(ADAPTER, "Powered") and not props.Get(ADAPTER, "Discovering"):
                 self._start_discovery()
                 log.info("scanning restarted")
         except dbus.exceptions.DBusException as e:
             log.debug("discovery watchdog: %s", e.get_dbus_message())
         return True
+
+    def _adapter_paths(self) -> list[str]:
+        return [str(p) for p, ifaces in self._managed_objects().items() if ADAPTER in ifaces]
+
+    def _switch_adapter(self) -> None:
+        paths = self._adapter_paths()
+        log.warning("Bluetooth adapter %s is gone; %s", self._adapter_path,
+                    f"switching to {paths[0]}" if paths else "waiting for one")
+        for path in list(self._links):
+            self._lost(path, "adapter removed")
+        self._cooldown.clear()
+        if not paths:
+            return
+        self._adapter_path = paths[0]
+        self._adapter = dbus.Interface(self._bus.get_object(BLUEZ, self._adapter_path), ADAPTER)
+        self._start_discovery()
+        log.info("scanning for PhoneKey phones on %s", self._adapter_path)
 
     def stop(self) -> None:
         if self._agent_registered:

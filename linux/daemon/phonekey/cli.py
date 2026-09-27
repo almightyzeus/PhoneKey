@@ -1,4 +1,4 @@
-"""`phonekey` command-line interface (Phase 2: no daemon, no BLE, no PAM)."""
+"""`phonekey` command-line interface."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import __version__, codec, crypto
+from . import __version__, codec, crypto, pamconfig
 from .codec import MsgType
 from .paths import default_socket_path, default_state_dir, dev_socket_path
 from .registry import DeviceRecord, Registry
@@ -93,19 +93,22 @@ def describe(record: DeviceRecord) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    devices = Registry(args.state_dir).all()
     daemon = daemon_status()
-    connected = {d["device_id"] for d in daemon["paired"] if d["connected"]} if daemon else set()
+    if daemon is not None:  # the daemon's own registry (unreadable to users in system mode)
+        devices = [(d["name"], bytes.fromhex(d["device_id"]), d["connected"]) for d in daemon["paired"]]
+    else:
+        devices = [(r.display_name, r.device_id, False) for r in Registry(args.state_dir).all()]
     print("PhoneKey")
     print("--------")
     print(f"PhoneKey daemon: {'running (' + daemon['mode'] + ' mode)' if daemon else 'not running'}")
     print(f"Bluetooth: {bluetooth_state()}")
     print(f"Paired devices: {len(devices)}")
-    for record in devices:
-        state = "connected" if record.device_id.hex() in connected else "not connected"
-        print(f"Device: {record.display_name} [{fingerprint(record.device_id)}] — {state}")
-    ready = daemon is not None and bool(connected)
+    for name, device_id, connected in devices:
+        print(f"Device: {name} [{fingerprint(device_id)}] — {'connected' if connected else 'not connected'}")
+    ready = any(connected for _, _, connected in devices)
     print("Authentication: " + ("ready" if ready else "not ready"))
+    enabled = [p.name for p in pamconfig.enabled_files()] if pamconfig.PAM_DIR.is_dir() else []
+    print("PAM: " + (f"enabled for {', '.join(enabled)}" if enabled else "not enabled (password only)"))
     return 0
 
 
@@ -160,10 +163,20 @@ def cmd_test(args: argparse.Namespace) -> int:
     return 1
 
 
+def target_user(args: argparse.Namespace) -> str:
+    """The account being set up: --user, else the user who ran sudo, else the caller."""
+    return getattr(args, "user", None) or os.environ.get("SUDO_USER") or getpass.getuser()
+
+
 def cmd_pair(args: argparse.Namespace) -> int:
     replies: list = []
+    account = target_user(args)
+    if account == "root":
+        print("phonekey: pair a normal account (run 'sudo phonekey pair' from it, or use --user)", file=sys.stderr)
+        return 1
+    print(f"Pairing a phone for account '{account}'.")
     try:
-        for event in daemon_request({"op": "pair"}, replies=replies):
+        for event in daemon_request({"op": "pair", "account": account}, replies=replies):
             if event.get("event") == "waiting":
                 print(f"Pairing mode is open for {int(event['window'])} seconds.")
                 print("On your phone: open PhoneKey → Add computer.")
@@ -268,6 +281,88 @@ def forge_response(request: bytes, device_id: bytes) -> bytes:
     return codec.with_signature(unsigned, crypto.sign(crypto.generate_key(), crypto.LABEL_AUTH_ASSERTION, unsigned))
 
 
+RECOVERY = """\
+If sudo misbehaves, the password still works: deny on the phone or wait {timeout} s.
+To undo without sudo:   pkexec phonekey disable      (uses polkit, not /etc/pam.d/sudo)
+Backups of the original file are in {backups}/.
+Last resort: GRUB → Advanced options → recovery mode → root shell →
+             mount -o remount,rw / && phonekey disable   (see protocol/SECURITY.md §9)"""
+
+
+def _require_root(what: str) -> bool:
+    if os.geteuid() != 0:
+        print(f"phonekey: {what} needs root: sudo phonekey {what}", file=sys.stderr)
+        return False
+    return True
+
+
+def cmd_enable(args: argparse.Namespace) -> int:
+    service = pamconfig.SERVICES[args.service]
+    path = pamconfig.PAM_DIR / service.name
+    if not args.dry_run and not _require_root("enable"):
+        return 1
+    module = pamconfig.installed_module()
+    if module is None:
+        print(f"phonekey: {pamconfig.MODULE_NAME} is not installed (run scripts/install.sh first)", file=sys.stderr)
+        return 1
+    status = daemon_status()
+    if status is None or status.get("mode") != "system":
+        print("phonekey: the PhoneKey system service is not running (systemctl status phonekeyd)", file=sys.stderr)
+        return 1
+    account = target_user(args)
+    if not any(d["account"] == account for d in status["paired"]):
+        print(f"phonekey: no phone is paired for '{account}' (sudo phonekey pair)", file=sys.stderr)
+        return 1
+    try:
+        old = pamconfig.read_service_file(path)
+        new = pamconfig.add(old, service)
+    except (OSError, pamconfig.PamConfigError) as e:
+        print(f"phonekey: {e}", file=sys.stderr)
+        return 1
+
+    print(f"This adds PhoneKey to {path} (module: {module}):\n")
+    print(pamconfig.diff(path, old, new))
+    print("Effect: sudo first asks your phone; if the phone is not connected, you deny, or it does\n"
+          "not answer, sudo asks for your password as before. No other PAM file is changed.\n")
+    print(RECOVERY.format(timeout=35, backups=pamconfig.BACKUP_DIR))
+    print()
+    if args.dry_run:
+        print("Dry run: nothing was changed.")
+        return 0
+    print("Before confirming, open a root shell in ANOTHER terminal (sudo -i) and keep it open\n"
+          "until you have tested sudo in a third terminal.")
+    if input("Type 'enable' to make this change: ").strip() != "enable":
+        print("Nothing changed.")
+        return 1
+    saved = pamconfig.backup(path, old)
+    pamconfig.write_atomic(path, new)
+    print(f"\n✓ Enabled for {service.name}. Backup: {saved}")
+    print("Test in a NEW terminal:  sudo -k && sudo true")
+    return 0
+
+
+def cmd_disable(args: argparse.Namespace) -> int:
+    """Removes every PhoneKey line from /etc/pam.d. Needs neither the phone nor the daemon."""
+    files = pamconfig.enabled_files()
+    if not files:
+        print("PhoneKey is not enabled in any PAM file.")
+        return 0
+    if not args.dry_run and not _require_root("disable"):
+        return 1
+    for path in files:
+        old = path.read_text()
+        new = pamconfig.remove(old)
+        print(pamconfig.diff(path, old, new))
+        if args.dry_run:
+            continue
+        saved = pamconfig.backup(path, old)
+        pamconfig.write_atomic(path, new)
+        print(f"✓ Disabled for {path.name}. Backup of the previous version: {saved}")
+    if args.dry_run:
+        print("Dry run: nothing was changed.")
+    return 0
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """The system service logs to the journal; the development daemon logs to its terminal."""
     if subprocess_run(["systemctl", "is-active", "--quiet", "phonekeyd"]) == 0:
@@ -303,7 +398,19 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--all", action="store_true", help="revoke every paired device")
     unpair.set_defaults(func=cmd_unpair)
 
-    sub.add_parser("pair", help="pair a phone over Bluetooth (needs phonekeyd)").set_defaults(func=cmd_pair)
+    pair = sub.add_parser("pair", help="pair a phone over Bluetooth (needs phonekeyd)")
+    pair.add_argument("--user", help="account to pair (default: the user who ran sudo)")
+    pair.set_defaults(func=cmd_pair)
+
+    enable = sub.add_parser("enable", help="use PhoneKey for a PAM service (shows the change, asks first)")
+    enable.add_argument("service", choices=sorted(pamconfig.SERVICES))
+    enable.add_argument("--dry-run", action="store_true", help="show the change without making it")
+    enable.add_argument("--user", help="account that must have a paired phone (default: the user who ran sudo)")
+    enable.set_defaults(func=cmd_enable)
+
+    disable = sub.add_parser("disable", help="remove PhoneKey from all PAM files (works without the phone)")
+    disable.add_argument("--dry-run", action="store_true", help="show the change without making it")
+    disable.set_defaults(func=cmd_disable)
 
     logs = sub.add_parser("logs", help="show daemon logs")
     logs.add_argument("-n", "--lines", type=int, default=50)

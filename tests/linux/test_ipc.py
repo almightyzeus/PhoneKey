@@ -4,7 +4,7 @@ import os
 import pwd
 import unittest
 
-from phonekey.daemon import ACTIONS, authorize
+from phonekey.daemon import ACTIONS, authorize, pairable_account
 
 ME = os.getuid()
 MY_NAME = pwd.getpwuid(ME).pw_name
@@ -41,6 +41,17 @@ class AuthorizeTest(unittest.TestCase):
     def test_pairing_in_dev_mode_only_for_daemon_owner(self):
         self.assertIsNone(check("pair", ME, system_mode=False))
         self.assertIsNotNone(check("pair", ME + 1, system_mode=False))
+
+    def test_pairing_in_dev_mode_only_for_own_account(self):
+        self.assertIsNone(check("pair", ME, MY_NAME, system_mode=False))
+        if ME != 0:
+            self.assertIsNotNone(check("pair", ME, "root", system_mode=False))
+
+    def test_pairable_accounts(self):
+        self.assertIsNone(pairable_account(MY_NAME) if ME != 0 else None)
+        self.assertIsNotNone(pairable_account("root"))
+        self.assertIsNotNone(pairable_account("no-such-user-phonekey"))
+        self.assertIsNotNone(pairable_account(["list"]))
 
     def test_unknown_operation_refused(self):
         self.assertIsNotNone(check("unpair", 0, system_mode=True))

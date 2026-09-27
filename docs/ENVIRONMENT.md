@@ -18,7 +18,7 @@ observations; nothing was installed or changed.
 | sudo | 1.9.15p5 (C sudo, not sudo-rs) |
 | Python | 3.12.3 with `cryptography` 41.0.7, `dbus` (python3-dbus), `gi` 3.48, `nacl` 1.5 |
 | Toolchain | gcc 13.3, make 4.3, pkg-config, `libssl-dev`, git 2.43, Java 21 |
-| **Missing** | `libpam0g-dev` (needed in Phase 5), cmake/meson (not needed) |
+| **Missing** | `libpam0g-dev` (headers for the PAM module; `apt-get download` + `dpkg-deb -x` works without installing it, see `linux/pam/Makefile`), cmake/meson (not needed) |
 
 ### PAM
 

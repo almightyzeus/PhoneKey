@@ -1,8 +1,8 @@
 # PhoneKey — Linux verifier
 
-**Current state: Phases 3–4 done.** BLE pairing and end-to-end authentication
-with the Android app work: `phonekey pair` and `phonekey test`. PAM
-integration (sudo, lock screen) is not written yet.
+**Current state: Phase 5.** BLE pairing, end-to-end authentication
+(`phonekey pair`, `phonekey test`), and opt-in `sudo` through the PAM module
+`pam_phonekey.so`. Lock screen and login are not done yet.
 
 Dependencies: Python 3 plus the Debian packages `python3-cryptography`,
 `python3-dbus` and `python3-gi` (all preinstalled on Linux Mint). The daemon runs
@@ -25,10 +25,11 @@ linux/daemon/phonekey/      Python package
   cli.py                    `phonekey` command
   simulator.py              software authenticator: tests + `--simulate` only
   paths.py                  development vs system locations
+  pamconfig.py              the one-line edit behind `phonekey enable/disable`
 linux/cli/phonekey          development launcher for the CLI
 linux/cli/phonekeyd         development launcher for the daemon
 linux/systemd/              system service unit (installed by scripts/install.sh)
-linux/pam/                  (Phase 5)
+linux/pam/                  pam_phonekey.c (PAM module), pam_harness.c (tests only), Makefile
 ```
 
 ## Running during development (no installation)
@@ -70,9 +71,10 @@ fingerprint.
   the one-time bonding. The pairing agent exists only during the pairing
   window, is never the default agent, and accepts only numeric comparison.
 
-## Installing as a system service (Phase 5 prerequisite; not done yet)
+## Installing as a system service
 
 ```bash
+make -C linux/pam                     # as your user; needs PAM headers (see linux/pam/Makefile)
 sudo scripts/install.sh --dry-run     # lists every change, changes nothing
 sudo scripts/install.sh               # asks you to type "install"
 sudo scripts/uninstall.sh [--purge]   # removes it again (works without the phone)
@@ -80,14 +82,59 @@ sudo scripts/uninstall.sh [--purge]   # removes it again (works without the phon
 
 The service runs as a dedicated `phonekey` user under a hardened systemd unit
 (`linux/systemd/phonekeyd.service`). Its state is in `/var/lib/phonekey` and its
-socket in `/run/phonekey/`. **The install touches no PAM, sudo, lock-screen,
-login, Bluetooth or D-Bus configuration.** Pair again after installing
-(`sudo phonekey pair`). `phonekey logs` shows the service journal.
+socket in `/run/phonekey/`. The install copies `pam_phonekey.so` into the PAM
+module directory but **references it nowhere: no PAM, sudo, lock-screen,
+login, Bluetooth or D-Bus configuration changes.** Stop the development daemon,
+then pair again (`sudo phonekey pair`; the phone gets a new entry for the
+system service). `phonekey logs` shows the service journal.
+
+## Using PhoneKey for sudo (opt-in)
+
+```bash
+sudo phonekey enable sudo --dry-run   # shows the exact diff and recovery steps
+sudo phonekey enable sudo             # same, then asks you to type "enable"
+sudo phonekey disable                 # removes it again (no phone or daemon needed)
+pkexec phonekey disable               # the same, if sudo itself misbehaves
+```
+
+`enable` adds two lines (a comment and
+`auth sufficient pam_phonekey.so action=sudo`) to `/etc/pam.d/sudo`, right
+before `@include common-auth`. Nothing else changes, and a copy of the file goes
+to `/var/backups/phonekey/`. Then:
+
+- **Phone connected:** sudo prints *PhoneKey: confirm on your phone*, and a
+  fingerprint approves.
+- **You tap Deny, or the phone does not answer within 35 s:** you get the
+  usual password prompt.
+- **Phone not connected, or daemon stopped:** you get the password prompt at
+  once.
+
+Approving is equivalent to typing your password for that sudo, and the phone
+cannot show which command is being run. Deny prompts you did not expect
+(SECURITY.md R‑8). The recovery procedures are in SECURITY.md §9.
+
+### The PAM module
+
+`pam_phonekey.c` is a thin client of about 300 lines with no cryptography.
+It checks with SO_PEERCRED that `/run/phonekey/phonekey.sock` belongs to the
+`phonekey` user, sends one JSON line, and maps the result (SECURITY.md D‑12).
+`pam_harness` runs a PAM stack from a private directory with
+`pam_start_confdir`, so the module can be tested against the development
+daemon and a real phone without touching `/etc/pam.d`:
+
+```bash
+mkdir -p /tmp/pk && cp linux/pam/pam_phonekey.so /tmp/pk/
+printf 'auth sufficient /tmp/pk/pam_phonekey.so action=test socket=%s daemon_user=%s\nauth requisite pam_deny.so\n' \
+  "$XDG_RUNTIME_DIR/phonekey/phonekey.sock" "$USER" > /tmp/pk/phonekey-live
+linux/pam/pam_harness /tmp/pk phonekey-live "$USER"
+```
 
 ## Tests
 
 ```bash
-scripts/linux-tests.sh          # ~150 tests, ~3 s, stdlib unittest
+scripts/linux-tests.sh          # ~180 tests, ~5 s, stdlib unittest
+PHONEKEY_PAM_INCLUDE=/path/to/usr/include scripts/linux-tests.sh   # if libpam0g-dev is not installed
+PHONEKEY_PAM_SANITIZE=1 scripts/linux-tests.sh                     # PAM module under ASan/UBSan
 ```
 
 | Area | File |
@@ -101,6 +148,8 @@ scripts/linux-tests.sh          # ~150 tests, ~3 s, stdlib unittest
 | BLE framing | `tests/linux/test_framing.py` |
 | ATT client against a scripted Android-style GATT server | `tests/linux/test_att.py` |
 | Local IPC authorization | `tests/linux/test_ipc.py` |
+| PAM module through real libpam, against a fake daemon (skipped without PAM headers) | `tests/linux/test_pam.py` |
+| PAM file edit: placement, exact removal, refusals, backups | `tests/linux/test_pamconfig.py` |
 | Registry: persistence, permissions, tamper detection | `tests/linux/test_registry.py` |
 | CLI | `tests/linux/test_cli.py` |
 

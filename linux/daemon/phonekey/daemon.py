@@ -2,7 +2,8 @@
 
 Development mode (default): runs as the invoking user, state in
 ~/.local/state/phonekey-dev, socket in $XDG_RUNTIME_DIR/phonekey/. Only the
-same user may connect. System mode (Phase 5) runs as the `phonekey` user.
+same user may connect. System mode (installed by scripts/install.sh) runs as
+the `phonekey` user; pam_phonekey.so and the CLI connect to /run/phonekey/.
 """
 
 from __future__ import annotations
@@ -47,7 +48,9 @@ def authorize(op: str, uid: int, account: str | None, *, daemon_uid: int, system
     if op == "pair":
         if system_mode:
             return None if uid == 0 else "pairing requires root (sudo phonekey pair)"
-        return None if uid == daemon_uid else "not allowed"
+        if uid != daemon_uid:
+            return "not allowed"
+        return None if account in (None, _user_name(uid)) else "may only pair your own account"
     if op == "auth":
         if uid == 0:
             return None
@@ -57,6 +60,26 @@ def authorize(op: str, uid: int, account: str | None, *, daemon_uid: int, system
             return "unknown caller"
         return None if account == name else "may only authenticate your own account"
     return "unknown operation"
+
+
+def _user_name(uid: int) -> str | None:
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return None
+
+
+def pairable_account(account) -> str | None:
+    """A phone can be paired to an existing, non-root login account."""
+    if not isinstance(account, str):
+        return "bad account"
+    try:
+        entry = pwd.getpwnam(account)
+    except KeyError:
+        return f"no such account: {account}"
+    if entry.pw_uid == 0:
+        return "pair a normal account, not root"
+    return None
 
 
 class Client:
@@ -186,10 +209,18 @@ class IpcServer:
             return
 
         if op == "status":
-            client.send({"result": "ok", "mode": "system" if self.system_mode else "development",
-                         **self.core.status()}, final=True)
+            status = self.core.status()
+            if client.uid not in (0, self.daemon_uid):  # other users see only their own phones
+                name = _user_name(client.uid)
+                status["paired"] = [d for d in status["paired"] if d["account"] == name]
+            client.send({"result": "ok", "mode": "system" if self.system_mode else "development", **status},
+                        final=True)
         elif op == "pair":
             pair_account = account or pwd.getpwuid(client.uid).pw_name
+            reason = pairable_account(pair_account)
+            if reason is not None:
+                client.send({"result": "error", "reason": reason}, final=True)
+                return
             client.on_close = self.core.cancel_pairing  # Ctrl-C in the CLI ends the window
             client.on_line = self._pairing_answer
             self.core.start_pairing(pair_account, PAIRING_WINDOW,
