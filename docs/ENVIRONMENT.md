@@ -50,5 +50,6 @@ before `@include common-auth`, without touching the shared file.
 |---|---|
 | 1 | Android Studio (bundles the SDK, Gradle, and a JDK), the platform SDK for the chosen `compileSdk`, `adb` (platform-tools), USB debugging enabled on the phone, and at least one fingerprint enrolled |
 | 2 | Nothing new (system Python packages) |
-| 3 | Creating the `phonekey` system user and systemd unit via `scripts/install.sh` (shown and confirmed first) |
-| 5 | `sudo apt install libpam0g-dev` |
+| 3–4 | Nothing: the daemon runs as your user from the repo |
+| 5 | `scripts/install.sh` (creates the `phonekey` user and systemd unit; shown with `--dry-run` and confirmed first) |
+| 5 | also `sudo apt install libpam0g-dev` (to build the PAM module) |

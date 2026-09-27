@@ -344,10 +344,11 @@ For the MVP:
 
 A future version may offer an opt-in policy that requires valid attestation.
 
-**MVP status:** the Android app currently omits the chain. At about 3 KB it
-made pairing responses long enough to drop the link on the MVP laptop's
-controller. The laptop records "not provided". It will be re-enabled once
-large transfers are proven reliable with the 244-byte frame limit.
+The Linux verifier records a summary such as `TEE, bound to this pairing, 5
+certificates, roots not verified`. It reads the Keystore security level and
+checks that the attestation challenge equals this pairing's `request_hash`,
+which shows the key was created for this pairing. It does not verify the chain
+against Google's roots.
 
 ## 6. BLE transport binding
 

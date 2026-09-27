@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import codec, crypto
+from . import attestation, codec, crypto
 from .codec import ErrorCode, KeySecurity, MsgType, ProtocolError
 from .registry import DeviceRecord, Registry
 
@@ -215,27 +215,11 @@ class Verifier:
             display_name=msg["display_name"],
             paired_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             key_security=key_security,
-            attestation=summarize_attestation(msg.get("attestation_chain")),
+            attestation=attestation.summarize(msg.get("attestation_chain"), session.request_hash),
             bond_address=bond_address,
         )
         self.registry.add(record)
         return record
-
-
-def summarize_attestation(chain: bytes | None) -> str:
-    """Informational only (SECURITY.md D-5): never affects pairing or authentication."""
-    if not chain:
-        return "not provided"
-    count, pos = 0, 0
-    while pos < len(chain):
-        if len(chain) - pos < 2:
-            return "unparsable"
-        length = int.from_bytes(chain[pos:pos + 2], "big")
-        pos += 2 + length
-        count += 1
-    if pos != len(chain):
-        return "unparsable"
-    return f"{count} certificates (not verified)"
 
 
 def _peer_error(code: int) -> ErrorCode:

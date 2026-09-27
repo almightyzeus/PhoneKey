@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import __version__, codec, crypto
 from .codec import MsgType
-from .paths import SYSTEM_SOCKET, default_socket_path, default_state_dir
+from .paths import default_socket_path, default_state_dir, dev_socket_path
 from .registry import DeviceRecord, Registry
 from .simulator import SimulatedAuthenticator
 from .verifier import Verifier
@@ -50,7 +50,8 @@ def daemon_request(request: dict, timeout: float = 150.0, replies: list | None =
     """
     import json
 
-    candidates = [default_socket_path(), SYSTEM_SOCKET]
+    candidates = [default_socket_path(system=True), dev_socket_path()] if "PHONEKEY_SOCKET" not in os.environ \
+        else [default_socket_path()]
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     for path in candidates:
@@ -267,6 +268,25 @@ def forge_response(request: bytes, device_id: bytes) -> bytes:
     return codec.with_signature(unsigned, crypto.sign(crypto.generate_key(), crypto.LABEL_AUTH_ASSERTION, unsigned))
 
 
+def cmd_logs(args: argparse.Namespace) -> int:
+    """The system service logs to the journal; the development daemon logs to its terminal."""
+    if subprocess_run(["systemctl", "is-active", "--quiet", "phonekeyd"]) == 0:
+        return subprocess_run(["journalctl", "-u", "phonekeyd", "-n", str(args.lines), "--no-pager"]
+                              + (["-f"] if args.follow else []))
+    print("phonekeyd is not installed as a service. The development daemon (linux/cli/phonekeyd)\n"
+          "logs to the terminal it runs in.")
+    return 0
+
+
+def subprocess_run(argv: list[str]) -> int:
+    import subprocess
+
+    try:
+        return subprocess.run(argv).returncode
+    except FileNotFoundError:
+        return 127
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="phonekey", description="PhoneKey verifier tools (pre-alpha).")
     parser.add_argument("--version", action="version", version=f"phonekey {__version__}")
@@ -284,6 +304,11 @@ def build_parser() -> argparse.ArgumentParser:
     unpair.set_defaults(func=cmd_unpair)
 
     sub.add_parser("pair", help="pair a phone over Bluetooth (needs phonekeyd)").set_defaults(func=cmd_pair)
+
+    logs = sub.add_parser("logs", help="show daemon logs")
+    logs.add_argument("-n", "--lines", type=int, default=50)
+    logs.add_argument("-f", "--follow", action="store_true")
+    logs.set_defaults(func=cmd_logs)
 
     test = sub.add_parser("test", help="run an end-to-end authentication test")
     test.add_argument("--simulate", action="store_true",

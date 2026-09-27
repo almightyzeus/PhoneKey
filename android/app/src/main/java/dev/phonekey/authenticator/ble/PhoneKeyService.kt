@@ -160,9 +160,8 @@ class PhoneKeyService : Service() {
         a2v = indicate
         server = manager.openGattServer(this, gattCallback)?.also { it.addService(service) }
         if (server == null) Log.e(TAG, "could not open GATT server")
-        // Links that outlived a previous instance of this service (the Bluetooth link is
-        // shared with other apps) must be adopted, or their requests never reach us.
-        manager.getConnectedDevices(BluetoothProfile.GATT_SERVER).forEach { server?.connect(it, false) }
+        // A link that outlived a previous instance of this service is detected by the
+        // laptop's keepalive and reconnected (PROTOCOL.md §6.3).
         updateAdvertising()
     }
 

@@ -251,11 +251,14 @@ class _Transport:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="phonekeyd", description="PhoneKey BLE verifier daemon (pre-alpha).")
-    parser.add_argument("--state-dir", type=Path, default=default_state_dir())
-    parser.add_argument("--socket", type=Path, default=default_socket_path())
-    parser.add_argument("--system", action="store_true", help="system service mode (Phase 5)")
+    parser.add_argument("--system", action="store_true",
+                        help="system service mode: /var/lib/phonekey, /run/phonekey, pairing needs root")
+    parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--socket", type=Path)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
+    args.state_dir = args.state_dir or default_state_dir(system=args.system)
+    args.socket = args.socket or default_socket_path(system=args.system)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
 

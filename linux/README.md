@@ -1,68 +1,93 @@
 # PhoneKey — Linux verifier
 
-**Current state: Phase 2.** This is a verifier library and CLI with no daemon,
-no BLE, and no PAM. It doesn't change the system: it writes only to a
-user-local development directory, and `phonekey test --simulate` uses a
-throwaway temporary one. It depends only on Python 3 and the Debian packages
-`python3-cryptography` and (optionally, for `status`) `python3-dbus`.
+**Current state: Phases 3–4 done.** BLE pairing and end-to-end authentication
+with the Android app work: `phonekey pair` and `phonekey test`. PAM
+integration (sudo, lock screen) is not written yet.
+
+Dependencies: Python 3 plus the Debian packages `python3-cryptography`,
+`python3-dbus` and `python3-gi` (all preinstalled on Linux Mint). The daemon runs
+**unprivileged**.
 
 ## Layout
 
 ```
-linux/daemon/phonekey/      Python package (becomes phonekeyd in Phase 3)
+linux/daemon/phonekey/      Python package
   codec.py                  strict TLV encoding (PROTOCOL.md §3–4)
   crypto.py                 ECDSA P-256 / SHA-256, labels, key loading
   registry.py               paired-device records (one JSON file per device)
   verifier.py               challenges, single-use pending table, pairing
-  simulator.py              software authenticator: tests + `--simulate` only
+  attestation.py            informational attestation summary
+  framing.py                BLE message framing (≤ 244-byte frames)
+  att.py                    minimal ATT client for the PhoneKey service
+  ble.py                    LE scanning + bonding via BlueZ; own L2CAP LE socket
+  core.py                   daemon logic: peers, pairing, auth, keepalive
+  daemon.py                 phonekeyd: GLib main loop + Unix-socket API
   cli.py                    `phonekey` command
+  simulator.py              software authenticator: tests + `--simulate` only
+  paths.py                  development vs system locations
 linux/cli/phonekey          development launcher for the CLI
+linux/cli/phonekeyd         development launcher for the daemon
+linux/systemd/              system service unit (installed by scripts/install.sh)
 linux/pam/                  (Phase 5)
 ```
 
-## CLI
+## Running during development (no installation)
 
 ```bash
-linux/cli/phonekey status            # Bluetooth adapter, paired devices
-linux/cli/phonekey devices           # list paired devices
-linux/cli/phonekey unpair <prefix>   # revoke one device (works without the phone)
-linux/cli/phonekey unpair --all
-linux/cli/phonekey test --simulate   # full pairing + auth + attack checks, in memory
+linux/cli/phonekeyd -v          # terminal 1: the daemon, as your user
+linux/cli/phonekey pair         # terminal 2: then "Add computer" on the phone
+linux/cli/phonekey test         # authenticate on the phone
+linux/cli/phonekey status
+linux/cli/phonekey devices
+linux/cli/phonekey unpair <prefix> | --all
+linux/cli/phonekey test --simulate   # protocol self-test with a software phone
 ```
 
-The registry defaults to `~/.local/state/phonekey-dev/`, or
-`$PHONEKEY_STATE_DIR` if set. The system daemon will use `/var/lib/phonekey`
-(Phase 3). `pair`, `enable`, `disable` and `logs` arrive with the phases that
-need them. `phonekey test` without `--simulate` needs the BLE transport (Phase 3).
+Development state lives in `~/.local/state/phonekey-dev/`, and the socket in
+`$XDG_RUNTIME_DIR/phonekey/`. Only your own user can use them.
 
-Example:
+### Pairing
 
+`phonekey pair` opens a 2-minute window. The phone must also be in pairing mode
+(**Add computer**). The first time, Bluetooth bonding shows a 6-digit code in
+the terminal and on the phone. Confirm only if they match. Then the phone
+shows the computer's name, account and key fingerprint, and asks for your
+fingerprint.
+
+### How the laptop talks to the phone
+
+- **The laptop is the BLE central.** Its Realtek RTL8822CU controller cannot
+  advertise, so the phone advertises and the laptop connects.
+- **The laptop opens its own LE-only connection.** The daemon opens an L2CAP LE
+  socket to the phone's ATT channel and speaks a minimal subset of ATT
+  (`att.py`). BlueZ's generic connect kept choosing classic Bluetooth for the
+  dual-mode phone, and could have tried audio or phonebook profiles.
+- **An encrypted, authenticated bond is required.** The socket demands one
+  (`BT_SECURITY_HIGH`).
+- **Keepalive:** a `STATUS` exchange every 20 s. A phone that stops answering is
+  disconnected and reconnected.
+- **BlueZ's role is limited** to LE scanning (restarted if BlueZ stops it) and
+  the one-time bonding. The pairing agent exists only during the pairing
+  window, is never the default agent, and accepts only numeric comparison.
+
+## Installing as a system service (Phase 5 prerequisite; not done yet)
+
+```bash
+sudo scripts/install.sh --dry-run     # lists every change, changes nothing
+sudo scripts/install.sh               # asks you to type "install"
+sudo scripts/uninstall.sh [--purge]   # removes it again (works without the phone)
 ```
-$ linux/cli/phonekey test --simulate
-PhoneKey — simulated authenticator (no Bluetooth, temporary registry)
---------
-Bluetooth: available (hci0) (not used)
-Paired device: Simulated phone [1cb9 c35a 71c4 9aaf]
-Connection: simulated
-Authentication: ready
 
-Authentication request sent...
-Waiting for biometric... (simulated approval)
-✓ Signature verified
-✓ PhoneKey authentication successful
-
-Security checks:
-✓ replayed response rejected (UNKNOWN_REQUEST)
-✓ tampered signature rejected (BAD_SIGNATURE)
-✓ modified request rejected (BAD_SIGNATURE)
-✓ unknown phone rejected (UNKNOWN_DEVICE)
-✓ user denial rejected (USER_DENIED)
-```
+The service runs as a dedicated `phonekey` user under a hardened systemd unit
+(`linux/systemd/phonekeyd.service`). Its state is in `/var/lib/phonekey` and its
+socket in `/run/phonekey/`. **The install touches no PAM, sudo, lock-screen,
+login, Bluetooth or D-Bus configuration.** Pair again after installing
+(`sudo phonekey pair`). `phonekey logs` shows the service journal.
 
 ## Tests
 
 ```bash
-scripts/linux-tests.sh          # 84 tests, ~2 s, stdlib unittest
+scripts/linux-tests.sh          # ~150 tests, ~3 s, stdlib unittest
 ```
 
 | Area | File |
@@ -70,24 +95,16 @@ scripts/linux-tests.sh          # 84 tests, ~2 s, stdlib unittest
 | Codec rules and shared vectors (`protocol/test-vectors/v1.json`) | `tests/linux/test_codec.py` |
 | Fuzzing: malformed input never crashes or authenticates | `tests/protocol/test_codec_fuzz.py` |
 | Authentication: replay, tampering, unknown phone, revocation, expiry, busy, labels, versions | `tests/linux/test_verifier.py` |
-| Pairing: proof of possession, nonce/hash binding, window, software keys, attestation informational | `tests/linux/test_pairing.py` |
-| Registry: persistence, 0700/0600 permissions, tamper detection, prefixes | `tests/linux/test_registry.py` |
-| CLI, including "simulation never touches the real registry" | `tests/linux/test_cli.py` |
+| Pairing: proof of possession, nonce/hash binding, window, software keys | `tests/linux/test_pairing.py` |
+| Attestation summary (informational) | `tests/linux/test_attestation.py` |
+| Daemon logic over a fake link: pairing, auth, timeouts, disconnects, keepalive | `tests/linux/test_core.py` |
+| BLE framing | `tests/linux/test_framing.py` |
+| ATT client against a scripted Android-style GATT server | `tests/linux/test_att.py` |
+| Local IPC authorization | `tests/linux/test_ipc.py` |
+| Registry: persistence, permissions, tamper detection | `tests/linux/test_registry.py` |
+| CLI | `tests/linux/test_cli.py` |
 
-The security checks were **mutation-tested**. Each check in the verifier,
-codec, registry and crypto (15 in total) was disabled one at a time, and the
-suite had to fail. It fails for every one.
-
-`scripts/gen-test-vectors.py` regenerates the vectors. Keys are ephemeral, and
-only public keys and signatures are written. The Android implementation must
-pass the same vectors when its codec is written (Phase 3).
-
-## Security notes
-
-- The software simulator is refused by a normal `Verifier`, because its
-  `key_security` is SOFTWARE. The CLI only ever pairs it into a temporary
-  registry, so a software key can never become a PAM credential.
-- Records are re-read on every lookup, so unpairing takes effect at once.
-  A record whose `device_id` doesn't match its public key is ignored with a
-  warning.
-- Pending challenges live only in memory: single use, 30 s, one per device.
+The security checks were mutation-tested in Phase 2 (all 15 disabled checks
+were caught). `ble.py` and `daemon.py` need real hardware and are covered by
+the live tests: pairing, authentication with the phone unlocked and locked,
+and recovery after an app restart.

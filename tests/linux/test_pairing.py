@@ -122,11 +122,10 @@ class PairingTest(VerifierTestCase):
         self.assert_pairing_fails(forged, ErrorCode.BAD_SIGNATURE)
 
     def test_attestation_is_informational(self):
-        response = self.new_phone.handle_pair_request(self.verifier.begin_pairing(account=ACCOUNT))
         cases = {
             b"": "not provided",
-            b"\x00\x03abc\x00\x01z": "2 certificates (not verified)",
-            b"\x00\xffabc": "unparsable",  # garbage chain must not block pairing
+            b"\x00\x03abc": "unparsable (ValueError)",
+            b"\x00\xffabc": "unparsable (ValueError)",  # garbage chain must not block pairing
         }
         for chain, summary in cases.items():
             with self.subTest(chain=chain):

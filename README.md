@@ -5,8 +5,9 @@ for Linux: approve `sudo` and screen unlock with a fingerprint on your phone,
 over Bluetooth Low Energy. There is no cloud, no internet, and no shared
 password.
 
-> ⚠️ **Status: pre-alpha, Phase 2 of 7.** Done so far: the Android Keystore/biometric
-> prototype and the Linux verifier library + CLI. Not yet done: BLE, the daemon, and PAM.
+> ⚠️ **Status: pre-alpha, Phase 4 of 7.** Pairing and end-to-end authentication
+> over BLE work (`phonekey pair`, `phonekey test`). Not yet done: PAM (sudo, lock
+> screen, login).
 > PhoneKey is **not production-secure**. Always keep password authentication
 > enabled.
 
@@ -35,7 +36,7 @@ prompt.
 
 ## MVP target
 
-Android (Kotlin, minSdk 31) ↔ BLE ↔ Linux Mint 22 (Cinnamon, BlueZ, PAM):
+Android (Kotlin, minSdk 33) ↔ BLE ↔ Linux Mint 22 (Cinnamon, BlueZ, PAM):
 `phonekey test`, then `sudo`, then screen unlock.
 
 ## Recovery

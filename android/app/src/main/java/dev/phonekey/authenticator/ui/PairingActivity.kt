@@ -102,10 +102,9 @@ class PairingActivity : AppCompatActivity(), PhoneKeyService.Listener {
         try {
             val generated = keys.generate(alias, attestationChallenge = offer.requestHash)
             val spki = keys.publicKeySpki(alias)
-            // The attestation chain (~3 KB, informational only) is not sent for now: long
-            // bursts dropped the link on the MVP laptop. See PROTOCOL.md §5.4.
+            // Attestation is informational only (SECURITY.md D-5); omitted if too large.
             val unsigned = AuthenticatorCore.unsignedPairResponse(offer, spki, phoneName(),
-                generated.security.wireValue, attestationChain = null)
+                generated.security.wireValue, generated.attestationChain?.map { it.encoded })
             val record = VerifierRecord(offer.verifierId, offer.verifierKey, offer.displayName, offer.account,
                 alias, AuthenticatorCore.sha256(spki), service.pairingAddress())
             BiometricSigner(this).sign(keys.signatureFor(alias), Labels.PAIR_RESPONSE + unsigned,

@@ -1,32 +1,45 @@
 # PhoneKey — Android authenticator
 
-Kotlin app, minSdk 31 (Android 12), no third-party dependencies beyond
+Kotlin app, minSdk 33 (Android 13), no third-party dependencies beyond
 `androidx.appcompat` and `androidx.biometric`.
 
-**Current state: Phase 1, a local crypto prototype.** No BLE, no pairing, no
-network. The app can:
+**Current state: Phases 1, 3 and 4 done.** The phone is a BLE peripheral: a
+foreground service runs a GATT server and advertises. It pairs with the Linux
+laptop and approves requests with a fingerprint.
 
-1. Generate an ECDSA P‑256 signing key in Android Keystore. StrongBox is tried
-   first if the phone advertises it, otherwise the key goes in the TEE.
-   Software-only keys are refused.
-2. Keep the private key inside Keystore. It is non-exportable.
-3. Expose the public key (DER SubjectPublicKeyInfo) and its id,
-   `SHA-256(SPKI)`.
-4. Require a fresh Class 3 biometric through `BiometricPrompt` + `CryptoObject`
-   for **every** signature.
-5. Sign a random 32-byte test challenge, then verify it with the public key,
-   and show that a modified challenge or signature is rejected.
+- **Keys:** one ECDSA P‑256 key per paired computer in Android Keystore.
+  StrongBox is used if present, otherwise the TEE; software keys are refused.
+  Keys are non-exportable, and **every** signature needs a fresh Class 3
+  fingerprint (`BiometricPrompt` + `CryptoObject`).
+- **Pairing** (**Add computer**): advertises the pairing UUID for 2 minutes.
+  After Bluetooth bonding (numeric comparison), shows the computer's name,
+  account and key fingerprint, then creates the key and signs the pairing
+  response with your fingerprint. The key's attestation chain is included, as
+  information only.
+- **Requests:** only requests signed by a paired computer, for this phone's
+  key and account, are shown. There is one prompt at a time, and at most 5 per
+  minute per computer. Requests appear over the lock screen (full-screen
+  notification), and one fingerprint approves.
+- **Link:** the GATT attributes require an authenticated (MITM-protected) bond.
+  The phone advertises only while a paired computer is disconnected, answers
+  the laptop's keepalive, and has no network access at all.
 
 ## Layout
 
 ```
 app/src/main/java/dev/phonekey/authenticator/
-  crypto/DeviceKeyStore.kt      Keystore key policy (the only way keys are created)
-  crypto/SignatureVerifier.kt   P-256 SPKI parsing, ECDSA verify, key ids, challenges
-  biometric/BiometricSigner.kt  BiometricPrompt bound to a Keystore Signature
-  ui/MainActivity.kt            Phase 1 test screen
-app/src/test/…                  JVM unit tests (verification logic)
-app/src/androidTest/…           Instrumented tests (real Keystore policy, on the phone)
+  crypto/DeviceKeyStore.kt        Keystore key policy (the only way keys are created)
+  crypto/SignatureVerifier.kt     P-256 SPKI parsing, ECDSA verify, key ids, challenges
+  biometric/BiometricSigner.kt    BiometricPrompt bound to a Keystore Signature
+  protocol/Codec.kt, Framing.kt   wire format (passes protocol/test-vectors/v1.json)
+  protocol/AuthenticatorCore.kt   request validation, pairing offer/response (pure Kotlin)
+  store/VerifierStore.kt          paired computers (public data only)
+  ble/PhoneKeyService.kt          foreground GATT server + advertiser, prompts, pairing state
+  ui/MainActivity.kt              status, paired computers, local key diagnostics
+  ui/PairingActivity.kt           "Add computer"
+  ui/AuthRequestActivity.kt       approve/deny a request (works over the lock screen)
+app/src/test/…                    JVM tests: codec vectors, framing, request validation, verifier
+app/src/androidTest/…             on-device Keystore policy tests
 ```
 
 ## Build and test
@@ -67,8 +80,9 @@ cd android
 | Wrong key / wrong curve / malformed key rejected | `signatureFromAnotherKeyFails`, `nonP256KeysAreRejected`, `malformedSpkiIsRejected` |
 
 The **successful** biometric-gated signature can't be automated, because it
-needs a real finger. It is tested manually in the app: **Generate test key** →
-**Sign test challenge**. After touching the sensor, all three lines should show
+needs a real finger. It is tested manually: `phonekey test` on the laptop, or
+the local diagnostics in the app (**Generate test key** → **Sign test
+challenge**). After touching the sensor, all three lines should show
 ✓. **Try signing without biometric** must report that Keystore refused.
 
 ## Android Keystore / BiometricPrompt constraints and limitations

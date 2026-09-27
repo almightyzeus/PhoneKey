@@ -1,0 +1,46 @@
+# PhoneKey verifier daemon (pre-alpha). Installed by scripts/install.sh.
+[Unit]
+Description=PhoneKey BLE verifier daemon (pre-alpha)
+Documentation=file:/usr/lib/phonekey/README.md
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+User=phonekey
+Group=phonekey
+ExecStart=/usr/bin/python3 /usr/lib/phonekey/phonekeyd --system
+Restart=on-failure
+RestartSec=5
+
+# /var/lib/phonekey (0700) and /run/phonekey (0755; the socket itself is 0666,
+# callers are authorized by SO_PEERCRED).
+StateDirectory=phonekey
+StateDirectoryMode=0700
+RuntimeDirectory=phonekey
+RuntimeDirectoryMode=0755
+UMask=0077
+
+# Hardening: no privileges, read-only system, only Unix and Bluetooth sockets.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_BLUETOOTH
+
+[Install]
+WantedBy=multi-user.target

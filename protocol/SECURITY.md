@@ -72,25 +72,25 @@ implementation: an Android authenticator and a Linux Mint verifier.
 
 ## 5. Threat model
 
-Each threat names the mechanism that defeats it and the test that must show it.
-The test names are the planned names; the tests are written in the phase shown.
+Each threat names the mechanism that defeats it and the tests that show it
+(Linux tests in `tests/`, Android tests in `android/app/src/{test,androidTest}`).
 
 | ID | Threat | Expected result | Mechanism | Test (phase) |
 |---|---|---|---|---|
-| T‑1 | **Replay.** Attacker records a valid `AUTH_RESPONSE` and replays it later, or to another request. | FAIL | Response is bound to `request_id` and to `request_hash` (which covers the 256-bit challenge). The pending entry is deleted on first use. Nothing survives a daemon restart. | `tests/linux/test_verifier.py::test_replayed_assertion_rejected`, `::test_assertion_for_other_request_rejected` (P2) |
-| T‑2 | **MITM / tampering.** Attacker modifies BLE traffic, such as the action, challenge, or signature. | FAIL | Both directions are signed over the exact bytes. The link is LESC-encrypted. Any modification breaks the signature or `request_hash`. | `test_modified_challenge_rejected`, `test_modified_signature_rejected`, `test_modified_action_rejected` (P1/P2); on-air fuzz tests (P3) |
-| T‑3 | **Stolen phone.** Attacker holds the phone. | FAIL unless the attacker passes a Class 3 biometric | Per-use `AUTH_BIOMETRIC_STRONG` key. Neither the device credential (PIN) nor an unlocked screen can authorize a signature (D‑4). | Instrumented `KeyPolicyTest.signWithoutBiometricFails` (P1) |
-| T‑4 | **Unknown phone.** A different Android device (or a different key on the same phone) answers. | FAIL | Only keys in the registry for that `account` are accepted. `device_id = H(pubkey)`, not a name or MAC. | `test_unregistered_key_rejected` (P2), live test (P4) |
-| T‑5 | **Phone already unlocked, no biometric for this request.** | FAIL | Auth timeout 0: Keystore demands a `CryptoObject`-bound biometric for **each** signature. An unlocked screen gives no authorization. | `KeyPolicyTest.signWithoutBiometricFails` (P1) |
-| T‑6 | **BLE spoofing.** Attacker advertises the phone's service UUID, or connects to the phone pretending to be the laptop. | FAIL | Names and addresses are metadata only. The laptop connects only to bonded phones (or pairing-UUID phones during its own pairing window), and a fake phone cannot produce a device-key signature. A fake laptop cannot bond without the user confirming a code, and cannot sign `AUTH_REQUEST`, so the phone doesn't prompt (`UNKNOWN_VERIFIER`/`BAD_SIGNATURE`). | `test_phone_ignores_requests_from_unknown_verifier` (P2, simulator), Android equivalent (P3), live test (P4) |
-| T‑7 | **Laptop compromise.** Attacker is root on the laptop. | **Not defended.** | Out of scope. Root can rewrite PAM or the registry. An *unprivileged* local attacker is handled: it cannot write the registry, cannot impersonate `phonekeyd` (socket owned by `phonekey`, peer checked), and cannot request auth for other accounts (SO_PEERCRED). | `test_ipc_rejects_foreign_account` (P5) |
-| T‑8 | **Lost phone.** | Revocable | `sudo phonekey unpair <device>` deletes the registry entry and works without the phone or the daemon. `sudo phonekey disable` removes PAM integration. The password still works. | `test_unpaired_device_rejected` (P2), manual recovery drill (P5) |
-| T‑9 | **Prompt fatigue / phishing.** Attacker triggers requests hoping the user approves by reflex. | Mitigated | Only signed requests from paired verifiers prompt. At most one prompt at a time. Rate limit of 5/min per verifier. The prompt shows the verifier, action, target, and account. | `test_busy_when_request_pending` (P2, verifier side); `test_busy_when_prompt_open`, `test_rate_limit` (P3, phone side) |
-| T‑10 | **Malformed input** over BLE or IPC (overflow, huge messages, bad TLV). | Rejected, no crash | Strict codec (§3 of PROTOCOL.md) with fixed limits. The daemon is Python (memory-safe). The C PAM shim parses a single fixed short token. Framing caps. | Codec vectors and fuzz tests `tests/protocol/test_codec_fuzz.py` (P2) |
-| T‑11 | **Pairing MITM.** Attacker inserts itself during `phonekey pair`. | FAIL, if the user compares the codes | LESC Numeric Comparison. The phone's characteristics require an authenticated link. App-level pairing needs **both** windows open: `phonekey pair` on the laptop and **Add computer** on the phone. The user also confirms the laptop's name, account and key fingerprint on the phone before the new key is created. | Manual pairing test with mismatched code (P3) |
-| T‑12 | **Denial of service** (jamming, disconnects, BUSY spam). | Password fallback | PhoneKey is `sufficient`. Unavailable, timeout, and error all fall back to the password. Timeouts are bounded. | `test_disconnect_mid_auth_fails_closed`, PAM tests with daemon stopped or phone absent (P3/P5) |
-| T‑13 | **Downgrade / cross-protocol.** | FAIL | A single accepted `version`. Signature labels are domain-separated and include the version. | `test_wrong_label_rejected`, `test_unknown_version_rejected` (P2) |
-| T‑14 | **Secrets in logs.** | None logged | Log only `request_id`, a short device-id prefix, the action, and the result. Never log keys, full messages, or attestation blobs. | Log review checklist per phase |
+| T‑1 | **Replay.** Attacker records a valid `AUTH_RESPONSE` and replays it later, or to another request. | FAIL | Response is bound to `request_id` and to `request_hash` (which covers the 256-bit challenge). The pending entry is deleted on first use. Nothing survives a daemon restart. | `test_verifier`: `replayed_assertion_rejected`, `assertion_for_other_request_rejected`, `assertion_with_swapped_request_id_rejected`, `pending_requests_do_not_survive_restart`; `test_core`: `replayed_response_over_link_ignored` |
+| T‑2 | **MITM / tampering.** Attacker modifies BLE traffic, such as the action, challenge, or signature. | FAIL | Both directions are signed over the exact bytes. The link is LESC-encrypted. Any modification breaks the signature or `request_hash`. | `test_verifier`: `modified_challenge_rejected`, `modified_action_signed_by_phone_rejected`, `modified_signature_rejected`, `modified_request_hash_rejected`; Android `SignatureVerifierTest` (every byte), `AuthenticatorCoreTest.tamperedRequestIsRefused` |
+| T‑3 | **Stolen phone.** Attacker holds the phone. | FAIL unless the attacker passes a Class 3 biometric | Per-use `AUTH_BIOMETRIC_STRONG` key. Neither the device credential (PIN) nor an unlocked screen can authorize a signature (D‑4). | On device: `KeystorePolicyTest.signingWithoutBiometricIsRefused`, `keyRequiresFreshStrongBiometricForEverySignature` |
+| T‑4 | **Unknown phone.** A different Android device (or a different key on the same phone) answers. | FAIL | Only keys in the registry for that `account` are accepted. `device_id = H(pubkey)`, not a name or MAC. | `test_verifier`: `unregistered_key_rejected`, `request_for_unpaired_device_refused`, `response_from_other_devices_key_for_this_device_rejected`, `response_naming_another_device_rejected` |
+| T‑5 | **Phone already unlocked, no biometric for this request.** | FAIL | Auth timeout 0: Keystore demands a `CryptoObject`-bound biometric for **each** signature. An unlocked screen gives no authorization. | On device: `KeystorePolicyTest.signingWithoutBiometricIsRefused`; live tests A (unlocked) and B (locked) |
+| T‑6 | **BLE spoofing.** Attacker advertises the phone's service UUID, or connects to the phone pretending to be the laptop. | FAIL | Names and addresses are metadata only. The laptop connects only to bonded phones (or pairing-UUID phones during its own pairing window), and a fake phone cannot produce a device-key signature. A fake laptop cannot bond without the user confirming a code, and cannot sign `AUTH_REQUEST`, so the phone doesn't prompt (`UNKNOWN_VERIFIER`/`BAD_SIGNATURE`). | `test_verifier.phone_ignores_requests_from_unknown_verifier`; Android `AuthenticatorCoreTest.unknownVerifierIsRefusedWithoutPrompt`, `forgedVerifierSignatureIsRefused`. Laptop connects only to bonded or pairing-window phones: manual |
+| T‑7 | **Laptop compromise.** Attacker is root on the laptop. | **Not defended.** | Out of scope. Root can rewrite PAM or the registry. An *unprivileged* local attacker is handled: it cannot write the registry, cannot impersonate `phonekeyd` (socket owned by `phonekey`, peer checked), and cannot request auth for other accounts (SO_PEERCRED). | `test_ipc`: `auth_only_for_own_account`, `pairing_requires_root_in_system_mode`, `actions_are_a_fixed_set` |
+| T‑8 | **Lost phone.** | Revocable | `sudo phonekey unpair <device>` deletes the registry entry and works without the phone or the daemon. `sudo phonekey disable` removes PAM integration. The password still works. | `test_verifier.unpaired_device_rejected`, `test_cli.unpair_by_prefix_and_all`; recovery drill before Phase 5 |
+| T‑9 | **Prompt fatigue / phishing.** Attacker triggers requests hoping the user approves by reflex. | Mitigated | Only signed requests from paired verifiers prompt. At most one prompt at a time. Rate limit of 5/min per verifier. The prompt shows the verifier, action, target, and account. | `test_verifier.busy_when_request_pending`, `test_core.duplicate_request_while_pending_is_busy`. Phone-side one-prompt rule and rate limit: code review and manual only (no automated test yet) |
+| T‑10 | **Malformed input** over BLE or IPC (overflow, huge messages, bad TLV). | Rejected, no crash | Strict codec (§3 of PROTOCOL.md) with fixed limits. The daemon is Python (memory-safe). The C PAM shim parses a single fixed short token. Framing caps. | `tests/protocol/test_codec_fuzz`, `test_codec` + shared vectors (Python and Kotlin), `test_framing`, `test_att`, `test_core.malformed_frames_get_error_and_do_not_break_link` |
+| T‑11 | **Pairing MITM.** Attacker inserts itself during `phonekey pair`. | FAIL, if the user compares the codes | LESC Numeric Comparison. The phone's characteristics require an authenticated link. App-level pairing needs **both** windows open: `phonekey pair` on the laptop and **Add computer** on the phone. The user also confirms the laptop's name, account and key fingerprint on the phone before the new key is created. | `test_pairing` (window, proof of possession, nonce/hash binding, one-shot); agent accepts only numeric comparison (`ble.PairingAgent`): manual; live pairing |
+| T‑12 | **Denial of service** (jamming, disconnects, BUSY spam). | Password fallback | PhoneKey is `sufficient`. Unavailable, timeout, and error all fall back to the password. Timeouts are bounded. | `test_core`: `timeout_fails_closed`, `disconnect_mid_auth_fails_closed`, `phone_not_connected`, keepalive tests; PAM password fallback (Phase 5) |
+| T‑13 | **Downgrade / cross-protocol.** | FAIL | A single accepted `version`. Signature labels are domain-separated and include the version. | `test_verifier`: `wrong_label_rejected`, `unknown_version_rejected`; codec vector `unsupported version` |
+| T‑14 | **Secrets in logs.** | None logged | Log only `request_id`, a short device-id prefix, the action, and the result. Never log keys, full messages, or attestation blobs. | Manual log review: logs show device-id prefixes, actions and results only |
 
 ## 6. Residual risks (accepted for the MVP, documented)
 
@@ -151,15 +151,18 @@ The test names are the planned names; the tests are written in the phase shown.
   after enrollment changes, and the phone must be re-paired.
 - Private keys are non-exportable: `PrivateKey.getEncoded()` returns `null`,
   and no API returns key material. The Phase 1 tests check this.
-- `KeyInfo.getSecurityLevel()` needs API 31, so **minSdk = 31** (Android 12).
-  That also matches the modern BLE permission model (`BLUETOOTH_CONNECT`,
-  `BLUETOOTH_SCAN`).
+- **minSdk = 33** (Android 13). `KeyInfo.getSecurityLevel()` needs API 31, and
+  API 33 adds the GATT-server notify API and the notification permission. The
+  app needs `BLUETOOTH_CONNECT` and `BLUETOOTH_ADVERTISE`, but no scanning or
+  location permission.
 - Background BLE needs a foreground service (`connectedDevice` type on
   API 34+) and a visible notification. Some vendors kill background services
   aggressively, so a battery-optimization exemption may be requested.
 - A BiometricPrompt needs an Activity in the foreground. An incoming request
   therefore raises a high-priority notification / full-screen intent that opens
-  the request screen.
+  the request screen. It shows over the lock screen, and one fingerprint
+  approves (verified on the test phone). On Android 14+ the user must allow
+  full-screen notifications; the app offers a button for that.
 
 ### 8.2 Linux Mint / BlueZ / PAM
 
