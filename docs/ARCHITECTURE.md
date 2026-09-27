@@ -10,9 +10,9 @@ model is in [../protocol/SECURITY.md](../protocol/SECURITY.md).
 Android phone (authenticator, BLE peripheral)       Linux Mint laptop (verifier, BLE central)
 ┌──────────────────────────────────────┐          ┌───────────────────────────────────────────┐
 │ PhoneKeyService (foreground,         │          │ phonekeyd (Python 3, unprivileged)        │
-│   connectedDevice)                   │          │  ├─ ble.py      BlueZ central: scan for   │
-│  ├─ GATT server: A2V (indicate),     │◄── BLE ──│  │              PhoneKey UUIDs, connect,  │
-│  │   V2A (write); MITM-bond only     │   LESC   │  │              bond, subscribe, write    │
+│   connectedDevice)                   │          │  ├─ ble.py      LE scan + bonding (BlueZ) │
+│  ├─ GATT server: A2V (indicate),     │◄── BLE ──│  │              own L2CAP LE socket, with │
+│  │   V2A (write); MITM-bond only     │   LESC   │  │              att.py (minimal ATT)      │
 │  ├─ advertises only while its laptop │  bonded  │  ├─ core.py     peers, pairing, auth      │
 │  │   is disconnected (or pairing)    │          │  ├─ verifier.py challenges, verification │
 │  └─ AuthenticatorCore (codec, rules) │          │  ├─ registry.py paired devices            │
@@ -32,9 +32,16 @@ Android phone (authenticator, BLE peripheral)       Linux Mint laptop (verifier,
   Realtek RTL8822CU controller rejects every LE advertisement, but scanning and
   connecting work. Roles don't matter for security (SECURITY.md D‑11). They also
   make messages point-to-point: the laptop writes to one specific phone.
-- **No BlueZ agent, no advertising, no D-Bus policy on the laptop.** The daemon
-  only scans, connects and uses GATT as a client, which ordinary users may do.
-  Nothing is installed during development.
+- **The laptop opens the LE link itself.** Your phone is dual-mode, and Android
+  also derives a classic-Bluetooth bond during LE pairing, so BlueZ's generic
+  `Device1.Connect` kept choosing classic Bluetooth (and could try audio or
+  phonebook profiles). The daemon instead opens an L2CAP LE socket to the
+  phone's ATT channel (requiring the authenticated, encrypted bond) and speaks a
+  minimal subset of ATT itself. BlueZ is used only for scanning and the
+  one-time bonding.
+- **No advertising, no default agent, no D-Bus policy on the laptop.** A pairing
+  agent exists only during `phonekey pair`, is never the default agent, and
+  accepts only numeric comparison. Nothing is installed during development.
 - **Python daemon.** It uses only packages already on Mint
   (`python3-cryptography`, `python3-dbus`, `python3-gi`), and it is
   memory-safe for parsing untrusted BLE input.

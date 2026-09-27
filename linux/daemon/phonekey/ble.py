@@ -1,23 +1,35 @@
-"""BlueZ central: finds PhoneKey phones, connects, and exchanges frames (PROTOCOL.md §6.1).
+"""BLE central: finds PhoneKey phones and exchanges frames with them (PROTOCOL.md §6).
 
-The laptop is the BLE central and never advertises. Only phones that are
-already bonded, or that advertise the pairing UUID while a pairing window is
-open, are connected. During a pairing window a BlueZ agent is registered (never
-as the default agent), so BlueZ asks *us* to confirm the numeric comparison for
-pairings this process starts; every other pairing method is rejected.
+The laptop is the central and never advertises. Data goes over an L2CAP LE
+socket that this process opens itself to the phone's ATT channel (see att.py),
+not through BlueZ's Device1.Connect: for a dual-mode phone BlueZ often picks
+classic Bluetooth and may try audio/phonebook profiles, which PhoneKey must
+never do. The socket requires the authenticated, encrypted bond.
+
+BlueZ is still used for LE scanning and for the one-time bonding. During a
+pairing window a BlueZ agent is registered (never as the default agent), so
+BlueZ asks *us* to confirm the numeric comparison for pairings this process
+starts; every other pairing method is rejected.
 """
 
 from __future__ import annotations
 
-import collections
+import ctypes
+import ctypes.util
+import errno
 import logging
+import os
+import socket
+import struct
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 import dbus
 import dbus.exceptions
 import dbus.service
+
+from .att import AttClient, AttError
 
 log = logging.getLogger(__name__)
 
@@ -29,18 +41,71 @@ PAIRING_ADV_UUID = "419b7d95-95a6-441f-a103-eb24d90499e0"
 BLUEZ = "org.bluez"
 ADAPTER = "org.bluez.Adapter1"
 DEVICE = "org.bluez.Device1"
-GATT_CHRC = "org.bluez.GattCharacteristic1"
 OBJECT_MANAGER = "org.freedesktop.DBus.ObjectManager"
 PROPERTIES = "org.freedesktop.DBus.Properties"
-
 AGENT_MANAGER = "org.bluez.AgentManager1"
 AGENT = "org.bluez.Agent1"
 AGENT_PATH = "/dev/phonekey/agent"
 
 RETRY_COOLDOWN = 10.0  # seconds before retrying a device whose connection failed
+QUICK_RETRY = 1.0
+CONNECT_TIMEOUT = 20  # seconds for the LE connection and ATT setup
 DISCOVERY_WATCHDOG = 5  # seconds between checks that our LE scan is still running
 
+# Linux Bluetooth socket constants (include/net/bluetooth/bluetooth.h, l2cap.h)
+SOL_BLUETOOTH = 274
+BT_SECURITY = 4
+BT_SECURITY_HIGH = 3  # encrypted with an authenticated (MITM-protected) key
+ATT_CID = 4
+BDADDR_LE_PUBLIC, BDADDR_LE_RANDOM = 1, 2
+
 Confirm = Callable[[str, int, Callable[[bool], None]], None]
+
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+class _SockaddrL2(ctypes.Structure):
+    _fields_ = [("l2_family", ctypes.c_ushort), ("l2_psm", ctypes.c_ushort), ("l2_bdaddr", ctypes.c_ubyte * 6),
+                ("l2_cid", ctypes.c_ushort), ("l2_bdaddr_type", ctypes.c_ubyte)]
+
+
+def _sockaddr(address: str | None, address_type: int) -> _SockaddrL2:
+    addr = _SockaddrL2()
+    addr.l2_family = socket.AF_BLUETOOTH
+    addr.l2_cid = ATT_CID
+    addr.l2_bdaddr_type = address_type
+    if address:
+        addr.l2_bdaddr[:] = bytes(int(x, 16) for x in reversed(address.split(":")))
+    return addr
+
+
+def open_le_att_socket(address: str, address_type: int) -> socket.socket:
+    """Starts a non-blocking LE connection to the peer's ATT channel (Python's socket
+    module cannot express LE L2CAP addresses, hence ctypes)."""
+    sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)
+    try:
+        sock.setsockopt(SOL_BLUETOOTH, BT_SECURITY, struct.pack("BB", BT_SECURITY_HIGH, 0))
+        local = _sockaddr(None, BDADDR_LE_PUBLIC)
+        if _libc.bind(sock.fileno(), ctypes.byref(local), ctypes.sizeof(local)) != 0:
+            raise OSError(ctypes.get_errno(), "bind: " + os.strerror(ctypes.get_errno()))
+        sock.setblocking(False)
+        remote = _sockaddr(address, address_type)
+        if _libc.connect(sock.fileno(), ctypes.byref(remote), ctypes.sizeof(remote)) != 0:
+            err = ctypes.get_errno()
+            if err != errno.EINPROGRESS:
+                raise OSError(err, "connect: " + os.strerror(err))
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+def find_adapter(bus: dbus.Bus) -> str | None:
+    manager = dbus.Interface(bus.get_object(BLUEZ, "/"), OBJECT_MANAGER)
+    for path, ifaces in manager.GetManagedObjects().items():
+        if ADAPTER in ifaces:
+            return str(path)
+    return None
 
 
 class Rejected(dbus.exceptions.DBusException):
@@ -94,24 +159,14 @@ class PairingAgent(dbus.service.Object):
         pass
 
 
-def find_adapter(bus: dbus.Bus) -> str | None:
-    manager = dbus.Interface(bus.get_object(BLUEZ, "/"), OBJECT_MANAGER)
-    for path, ifaces in manager.GetManagedObjects().items():
-        if ADAPTER in ifaces:
-            return str(path)
-    return None
-
-
 @dataclass
 class _Link:
     pairing: bool
-    bonded: bool = False  # never touch protected attributes before bonding completes
-    notify_path: str | None = None
-    write_path: str | None = None
-    mtu: int | None = None
+    sock: socket.socket | None = None
+    client: AttClient | None = None
+    connect_timer: int | None = None
+    io_watch: int | None = None
     ready: bool = False
-    queue: collections.deque = field(default_factory=collections.deque)
-    writing: bool = False
 
 
 class BleCentral:
@@ -120,6 +175,9 @@ class BleCentral:
                  on_frame: Callable[[str, bytes, int | None], None],
                  on_disconnect: Callable[[str], None],
                  on_confirm: Confirm):
+        from gi.repository import GLib
+
+        self._glib = GLib
         self._bus = bus
         self._adapter_path = adapter_path
         self._adapter = dbus.Interface(bus.get_object(BLUEZ, adapter_path), ADAPTER)
@@ -137,19 +195,13 @@ class BleCentral:
                                       signal_name="InterfacesAdded")
         self._bus.add_signal_receiver(self._device_changed, dbus_interface=PROPERTIES,
                                       signal_name="PropertiesChanged", arg0=DEVICE, path_keyword="path")
-        self._bus.add_signal_receiver(self._characteristic_changed, dbus_interface=PROPERTIES,
-                                      signal_name="PropertiesChanged", arg0=GATT_CHRC, path_keyword="path")
         try:
             self._start_discovery()
         except dbus.exceptions.DBusException as e:
             on_error(f"cannot start LE discovery: {e.get_dbus_message()}")
             return
         log.info("scanning for PhoneKey phones")
-        from gi.repository import GLib
-        GLib.timeout_add_seconds(DISCOVERY_WATCHDOG, self._discovery_watchdog)
-        for path, ifaces in self._managed_objects().items():
-            if DEVICE in ifaces:
-                self._consider(str(path), ifaces[DEVICE])
+        self._glib.timeout_add_seconds(DISCOVERY_WATCHDOG, self._discovery_watchdog)
         on_ready()
 
     def _start_discovery(self) -> None:
@@ -169,7 +221,7 @@ class BleCentral:
                 log.info("scanning restarted")
         except dbus.exceptions.DBusException as e:
             log.debug("discovery watchdog: %s", e.get_dbus_message())
-        return True  # keep the timer
+        return True
 
     def stop(self) -> None:
         if self._agent_registered:
@@ -179,7 +231,7 @@ class BleCentral:
         except dbus.exceptions.DBusException:
             pass
         for path in list(self._links):
-            self._disconnect(path)
+            self._close(path)
 
     def set_pairing_mode(self, enabled: bool) -> None:
         self._pairing = enabled
@@ -200,24 +252,22 @@ class BleCentral:
                 if DEVICE in ifaces:
                     self._consider(str(path), ifaces[DEVICE])
 
-    def drop(self, peer_id: str) -> None:
-        """Fully disconnects a phone so it reconnects from scratch."""
-        self._links.pop(peer_id, None)  # the core already knows; don't report it again
-        self._cooldown[peer_id] = time.monotonic() + 1.0
-        try:
-            self._device(peer_id).Disconnect(reply_handler=lambda: None, error_handler=lambda e: None)
-        except dbus.exceptions.DBusException:
-            pass
-
     def send(self, peer_id: str, frame: bytes) -> None:
         link = self._links.get(peer_id)
         if link is None or not link.ready:
             log.info("dropping frame for %s: not connected", peer_id)
             return
-        link.queue.append(frame)
-        self._pump(peer_id, link)
+        try:
+            link.client.write(frame)
+        except (AttError, OSError) as e:
+            self._lost(peer_id, f"write failed: {e}")
 
-    # ---- discovery and connection ---------------------------------------
+    def drop(self, peer_id: str) -> None:
+        """Disconnects a phone so it reconnects from scratch (the core already knows)."""
+        self._close(peer_id)
+        self._cooldown[peer_id] = time.monotonic() + QUICK_RETRY
+
+    # ---- discovery ---------------------------------------------------------
 
     def _managed_objects(self) -> dict:
         return dbus.Interface(self._bus.get_object(BLUEZ, "/"), OBJECT_MANAGER).GetManagedObjects()
@@ -225,161 +275,175 @@ class BleCentral:
     def _device(self, path: str) -> dbus.Interface:
         return dbus.Interface(self._bus.get_object(BLUEZ, path), DEVICE)
 
+    def _device_props(self, path: str) -> dict:
+        return dbus.Interface(self._bus.get_object(BLUEZ, path), PROPERTIES).GetAll(DEVICE)
+
     def _interfaces_added(self, path, ifaces):
         if DEVICE in ifaces:
             self._consider(str(path), ifaces[DEVICE])
 
     def _device_changed(self, interface, changed, invalidated, path=None):
         path = str(path)
-        if not path.startswith(self._adapter_path + "/"):
-            return
-        if "Connected" in changed and not changed["Connected"]:
-            if self._links.pop(path, None) is not None:
-                log.info("disconnected %s", path)
-                self._on_disconnect(path)
-            return
-        if path in self._links:
-            if changed.get("ServicesResolved") and self._links[path].bonded:
-                self._setup_gatt(path, final=True)
-            return
-        if {"UUIDs", "RSSI", "ServiceData"} & set(changed):
-            props = dbus.Interface(self._bus.get_object(BLUEZ, path), PROPERTIES).GetAll(DEVICE)
-            self._consider(path, props)
+        if path.startswith(self._adapter_path + "/") and path not in self._links and \
+                {"UUIDs", "RSSI", "ServiceData"} & set(changed):
+            try:
+                self._consider(path, self._device_props(path))
+            except dbus.exceptions.DBusException:
+                pass  # device removed meanwhile
 
     def _consider(self, path: str, props) -> None:
         if path in self._links or time.monotonic() < self._cooldown.get(path, 0):
             return
-        if props.get("RSSI") is None and not props.get("Connected"):
-            return  # not advertising right now (only cached by BlueZ): connecting would just time out
+        if props.get("RSSI") is None:
+            return  # not advertising right now (only cached by BlueZ)
         uuids = {str(u).lower() for u in props.get("UUIDs", [])}
+        paired = bool(props.get("Paired"))
         pairing_busy = any(link.pairing for link in self._links.values())
         if self._pairing and PAIRING_ADV_UUID in uuids and not pairing_busy:
-            self._connect(path, pairing=True, bonded=bool(props.get("Paired")))
-        elif SERVICE_UUID in uuids and props.get("Paired"):
-            self._connect(path, pairing=False, bonded=True)
+            self._links[path] = _Link(pairing=True)
+            if paired:
+                self._open(path)
+            else:
+                self._bond(path)
+        elif SERVICE_UUID in uuids and paired:
+            self._links[path] = _Link(pairing=False)
+            self._open(path)
 
-    def _connect(self, path: str, *, pairing: bool, bonded: bool) -> None:
-        link = _Link(pairing=pairing, bonded=bonded)
-        self._links[path] = link
-        log.info("connecting to %s (%s)", path, "pairing" if pairing else "bonded")
+    # ---- one-time bonding through BlueZ ------------------------------------------
 
-        def bonded_ok():
-            link.bonded = True
+    def _bond(self, path: str) -> None:
+        """Bonds via BlueZ (numeric comparison through our agent), then reconnects over our own socket."""
+        log.info("bonding with %s: confirm the code in the terminal and on the phone", path)
+
+        def reopen():
+            if path in self._links:
+                self._open(path)
+            return False
+
+        def bonded():
             log.info("bonded with %s", path)
-            self._maybe_resolved(path)
+            # BlueZ's link carries BlueZ's own ATT client; replace it with ours.
+            self._device(path).Disconnect(reply_handler=lambda: self._glib.timeout_add(500, reopen),
+                                          error_handler=lambda e: self._glib.timeout_add(500, reopen))
 
         def connected():
-            if bonded:
-                self._maybe_resolved(path)
-                return
-            # Subscribing before this finishes would start a second, competing security procedure.
-            log.info("bonding with %s: confirm the code on the phone and in the laptop's Bluetooth dialog", path)
-            self._device(path).Pair(reply_handler=bonded_ok,
+            self._device(path).Pair(reply_handler=bonded,
                                     error_handler=lambda e: self._fail(path, f"bonding failed: {e}"),
                                     timeout=90)
 
-        def connect_error(e):
-            # For a bonded dual-mode phone, Connect() also tries classic-Bluetooth profiles
-            # and reports their failure (br-connection-*) even though the LE link is up.
-            props = dbus.Interface(self._bus.get_object(BLUEZ, path), PROPERTIES).GetAll(DEVICE)
-            if props.get("Connected") and path in self._links:
-                log.info("LE link to %s is up (ignoring: %s)", path, e.get_dbus_message())
-                connected()
-            else:
-                self._fail(path, f"connect failed: {e}")
+        # An unbonded phone advertises from a random address, so BlueZ connects over LE.
+        self._device(path).Connect(reply_handler=connected,
+                                   error_handler=lambda e: self._fail(path, f"connect failed: {e}"),
+                                   timeout=CONNECT_TIMEOUT)
 
-        self._device(path).Connect(reply_handler=connected, error_handler=connect_error, timeout=15)
+    # ---- our own LE ATT link ----------------------------------------------------
 
-    def _maybe_resolved(self, path: str) -> None:
-        # Bonded phones usually have a cached GATT database; ServicesResolved can stay
-        # false when BlueZ's parallel classic-Bluetooth attempt fails, so don't rely on it.
-        props = dbus.Interface(self._bus.get_object(BLUEZ, path), PROPERTIES).GetAll(DEVICE)
-        self._setup_gatt(path, final=bool(props.get("ServicesResolved")))
-
-    def _setup_gatt(self, path: str, final: bool) -> None:
-        """Finds the PhoneKey characteristics and subscribes. If they are not there yet and
-        services are still resolving (not `final`), wait for the ServicesResolved signal."""
-        link = self._links.get(path)
-        if link is None or link.notify_path is not None:
-            return  # unknown, or already set up (ServicesResolved and Connect can both get here)
-        for obj_path, ifaces in self._managed_objects().items():
-            chrc = ifaces.get(GATT_CHRC)
-            if chrc is None or not str(obj_path).startswith(path + "/"):
-                continue
-            uuid = str(chrc["UUID"]).lower()
-            if uuid == A2V_UUID:
-                link.notify_path = str(obj_path)
-                link.mtu = int(chrc["MTU"]) if "MTU" in chrc else None
-            elif uuid == V2A_UUID:
-                link.write_path = str(obj_path)
-        if link.notify_path is None or link.write_path is None:
-            link.notify_path = link.write_path = None
-            if final:
-                self._fail(path, "PhoneKey service not found on device")
-            return
-        chrc = dbus.Interface(self._bus.get_object(BLUEZ, link.notify_path), GATT_CHRC)
-        chrc.StartNotify(reply_handler=lambda: self._ready(path),
-                         error_handler=lambda e: self._fail(path, f"subscribe failed: {e}"))
-
-    def _ready(self, path: str) -> None:
+    def _open(self, path: str) -> None:
         link = self._links.get(path)
         if link is None:
             return
+        props = self._device_props(path)
+        address = str(props["Address"])
+        address_type = BDADDR_LE_RANDOM if props.get("AddressType") == "random" else BDADDR_LE_PUBLIC
+        log.info("connecting to %s over LE (%s)", path, "pairing" if link.pairing else "bonded")
+        try:
+            link.sock = open_le_att_socket(address, address_type)
+        except OSError as e:
+            self._fail(path, str(e))
+            return
+        GLib = self._glib
+        link.connect_timer = GLib.timeout_add_seconds(CONNECT_TIMEOUT, self._connect_timeout, path)
+        link.io_watch = GLib.io_add_watch(link.sock.fileno(), GLib.IO_OUT | GLib.IO_ERR | GLib.IO_HUP,
+                                          self._socket_connected, path)
+
+    def _connect_timeout(self, path: str) -> bool:
+        link = self._links.get(path)
+        if link is not None:
+            link.connect_timer = None
+            self._fail(path, "connection timed out")
+        return False
+
+    def _socket_connected(self, fd, condition, path: str) -> bool:
+        link = self._links.get(path)
+        if link is None or link.sock is None:
+            return False
+        link.io_watch = None
+        err = link.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        if err:
+            # Usually the phone's advertisement was not caught in time: retry soon.
+            log.info("%s: LE connect failed: %s", path, os.strerror(err))
+            self._cooldown[path] = time.monotonic() + QUICK_RETRY
+            self._lost(path, None)
+            return False
+        sock = link.sock
+        link.client = AttClient(
+            SERVICE_UUID, A2V_UUID, V2A_UUID,
+            send=sock.send,
+            on_ready=lambda mtu: self._ready(path, mtu),
+            on_value=lambda value: self._on_frame(path, value, link.client.mtu),
+            on_error=lambda reason: self._fail(path, reason),
+        )
+        GLib = self._glib
+        link.io_watch = GLib.io_add_watch(sock.fileno(), GLib.IO_IN | GLib.IO_ERR | GLib.IO_HUP,
+                                          self._readable, path)
+        link.client.start()
+        return False
+
+    def _readable(self, fd, condition, path: str) -> bool:
+        link = self._links.get(path)
+        if link is None or link.sock is None:
+            return False
+        try:
+            pdu = link.sock.recv(1024)
+        except BlockingIOError:
+            return True
+        except OSError as e:
+            link.io_watch = None
+            self._lost(path, f"link error: {e}")
+            return False
+        if not pdu:
+            link.io_watch = None
+            self._lost(path, "disconnected")
+            return False
+        link.client.feed(pdu)
+        return True
+
+    def _ready(self, path: str, mtu: int) -> None:
+        link = self._links.get(path)
+        if link is None:
+            return
+        if link.connect_timer is not None:
+            self._glib.source_remove(link.connect_timer)
+            link.connect_timer = None
         link.ready = True
-        log.info("subscribed to %s (ATT MTU %s)", path, link.mtu)
-        self._on_connect(path, link.mtu)
+        log.info("subscribed to %s over LE (ATT MTU %d)", path, mtu)
+        self._on_connect(path, mtu)
 
     def _fail(self, path: str, reason: str) -> None:
+        if path not in self._links:
+            return
         log.warning("%s: %s", path, reason)
-        # BlueZ sometimes picks classic Bluetooth for a dual-mode phone; the next LE
-        # advertisement makes it choose LE, so retry soon.
-        quick = "br-connection" in reason
-        self._cooldown[path] = time.monotonic() + (0.5 if quick else RETRY_COOLDOWN)
-        self._disconnect(path)
+        self._cooldown[path] = time.monotonic() + RETRY_COOLDOWN
+        self._lost(path, None)
 
-    def _disconnect(self, path: str) -> None:
-        if self._links.pop(path, None) is not None:
+    def _lost(self, path: str, reason: str | None) -> None:
+        link = self._links.get(path)
+        if link is None:
+            return
+        if reason:
+            log.info("%s: %s", path, reason)
+            self._cooldown.setdefault(path, time.monotonic() + QUICK_RETRY)
+        was_ready = link.ready
+        self._close(path)
+        if was_ready:
             self._on_disconnect(path)
-        try:
-            self._device(path).Disconnect(reply_handler=lambda: None, error_handler=lambda e: None)
-        except dbus.exceptions.DBusException:
-            pass
 
-    # ---- data ------------------------------------------------------------
-
-    def _characteristic_changed(self, interface, changed, invalidated, path=None):
-        path = str(path)
-        device_path = path.rsplit("/", 2)[0]  # .../dev_XX/serviceNN/charNNNN
-        link = self._links.get(device_path)
-        if "Notifying" in changed and not changed["Notifying"]:
-            # The phone's GATT server restarted (e.g. the app was killed) while the link stayed up.
-            if link is not None and link.ready and path == link.notify_path:
-                log.info("subscription to %s lost; resubscribing", device_path)
-                link.ready = False
-                dbus.Interface(self._bus.get_object(BLUEZ, path), GATT_CHRC).StartNotify(
-                    reply_handler=lambda: self._ready(device_path),
-                    error_handler=lambda e: self._fail(device_path, f"resubscribe failed: {e}"))
+    def _close(self, path: str) -> None:
+        link = self._links.pop(path, None)
+        if link is None:
             return
-        if "Value" not in changed:
-            return
-        if link is not None and link.ready and path == link.notify_path:
-            self._on_frame(device_path, bytes(changed["Value"]), link.mtu)
-
-    def _pump(self, peer_id: str, link: _Link) -> None:
-        if link.writing or not link.queue:
-            return
-        link.writing = True
-        frame = link.queue.popleft()
-
-        def done():
-            link.writing = False
-            self._pump(peer_id, link)
-
-        def failed(e):
-            link.writing = False
-            link.queue.clear()
-            self._fail(peer_id, f"write failed: {e}")
-
-        chrc = dbus.Interface(self._bus.get_object(BLUEZ, link.write_path), GATT_CHRC)
-        chrc.WriteValue(dbus.Array(frame, signature="y"), {"type": "request"},
-                        reply_handler=done, error_handler=failed)
+        for source in (link.connect_timer, link.io_watch):
+            if source is not None:
+                self._glib.source_remove(source)
+        if link.sock is not None:
+            link.sock.close()

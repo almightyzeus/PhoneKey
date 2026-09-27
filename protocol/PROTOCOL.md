@@ -373,14 +373,22 @@ verifier recognises a bonded phone through the bond's identity resolving key.
 
 ### 6.3 Connection handshake
 
-1. The verifier connects, bonds if needed, discovers the service, and
-   subscribes to A2V indications.
+1. The verifier connects **over LE only**, bonds if needed, discovers the
+   service, and subscribes to A2V indications. (The Linux verifier opens its
+   own L2CAP LE socket to the phone's ATT channel for this. A generic
+   "connect" on a dual-mode phone can pick classic Bluetooth and its
+   profiles, which PhoneKey never uses.)
 2. On subscription the phone sends `STATUS {READY}`:
    - with `verifier_id` and `device_id` if the laptop is a paired verifier
      (looked up by its Bluetooth address, which is only a routing hint), or
    - with no ids when the phone is in pairing mode, which asks the verifier
      for a `PAIR_REQUEST` if its own pairing window is open.
-3. The verifier uses the ids in `STATUS` only to route requests and show
+3. **Keepalive:** every 20 s the verifier sends `STATUS {READY, verifier_id}`,
+   and the authenticator answers with its own `STATUS {READY}` with ids. If no
+   `STATUS` arrives within 6 s (after subscribing, or after a keepalive), the
+   verifier disconnects and reconnects. This recovers links that stay up while
+   the phone app restarts.
+4. The verifier uses the ids in `STATUS` only to route requests and show
    status. They are unauthenticated claims. A false claim can at most cause a
    request to be sent to the wrong phone, which then fails. The decision
    always rests on the device key's signature.
