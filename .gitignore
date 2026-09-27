@@ -1,0 +1,32 @@
+# Keys and credentials — never commit
+*.pem
+*.key
+*.jks
+*.keystore
+*.p12
+secrets/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+captures/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# C
+*.o
+*.so
+
+# Editors / OS
+.vscode/
+*.swp
+.DS_Store
