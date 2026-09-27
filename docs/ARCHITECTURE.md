@@ -106,9 +106,10 @@ shows its usual `[sudo] password for …` prompt.
 phonekey/
 ├── android/              Android Studio project (Kotlin)        — Phase 1
 ├── linux/
-│   ├── daemon/           phonekeyd (Python package `phonekey`)  — Phase 2/3
+│   ├── daemon/phonekey/  Python package: codec, crypto, registry,
+│   │                     verifier, simulator, cli (phonekeyd in P3) — Phase 2/3
 │   ├── pam/              pam_phonekey.c + Makefile              — Phase 5
-│   └── cli/              `phonekey` command                     — Phase 2
+│   └── cli/phonekey      `phonekey` launcher                    — Phase 2
 ├── protocol/
 │   ├── PROTOCOL.md       platform-independent protocol
 │   ├── SECURITY.md       threat model, decisions, recovery

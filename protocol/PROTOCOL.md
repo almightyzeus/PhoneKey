@@ -101,8 +101,12 @@ if any rule is broken:
 3. Each field has a fixed type and length limit (§3.3). Fixed-size fields
    MUST have exactly that size.
 4. Integers are unsigned big-endian of the stated width.
-5. Strings are UTF‑8, MUST NOT contain C0 control characters (U+0000–U+001F,
-   U+007F), and are compared bytewise (no normalization).
+5. Strings are strict UTF‑8 and are compared bytewise (no normalization).
+   They MUST NOT contain control characters (U+0000–U+001F, U+007F–U+009F) or
+   bidirectional formatting characters (U+061C, U+200E, U+200F,
+   U+202A–U+202E, U+2066–U+2069). Strings are shown to the user in prompts,
+   and bidi overrides could make the displayed text differ from what is
+   signed.
 6. There are no trailing bytes after the last field.
 7. The total encoded message MUST NOT exceed **16 384 bytes**.
 8. `signature` (tag `0x7F`), when present, is always the last field. The
@@ -399,6 +403,7 @@ confidentiality from the LESC link encryption.
 | 0x000C | `NOT_PAIRING` | Pairing message received outside a pairing window. |
 | 0x000D | `RATE_LIMITED` | Too many requests. |
 | 0x000E | `INTERNAL` | Unexpected internal failure. |
+| 0x000F | `INSECURE_KEY` | Pairing refused: the device key is not hardware-backed (`key_security` = software). |
 
 Every error is fail-closed: the requested action is **not** authorized.
 

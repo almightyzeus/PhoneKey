@@ -5,7 +5,8 @@ for Linux: approve `sudo` and screen unlock with a fingerprint on your phone,
 over Bluetooth Low Energy. There is no cloud, no internet, and no shared
 password.
 
-> ⚠️ **Status: pre-alpha, Phase 0 (design only).** Nothing is implemented yet.
+> ⚠️ **Status: pre-alpha, Phase 2 of 7.** Done so far: the Android Keystore/biometric
+> prototype and the Linux verifier library + CLI. Not yet done: BLE, the daemon, and PAM.
 > PhoneKey is **not production-secure**. Always keep password authentication
 > enabled.
 
@@ -30,6 +31,7 @@ prompt.
 - [protocol/SECURITY.md](protocol/SECURITY.md): threat model, security decisions, **recovery procedures**
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): Linux + Android design and phase plan
 - [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md): development environment requirements
+- [android/README.md](android/README.md), [linux/README.md](linux/README.md): build, test, and component notes
 
 ## MVP target
 

@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""`phonekey` command-line tool (development launcher; installed layout comes in Phase 3)."""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "daemon"))
+
+from phonekey.cli import main  # noqa: E402
+
+sys.exit(main())
