@@ -100,14 +100,24 @@ needs a real finger. It is tested manually in the app: **Generate test key** →
 
 ## Device report
 
-Filled in from the real test device after running the app and the instrumented
-tests.
+Phase 1 results on the test phone (2026-09-27).
 
-| Field | Motorola Edge 50 Plus |
+| Field | Motorola Edge 50 Fusion |
 |---|---|
-| Android / API | _pending_ |
-| StrongBox feature | _pending_ |
-| Key security level obtained | _pending_ |
-| Attestation available | _pending_ |
-| Class 3 biometric | _pending_ |
-| Exception when signing without biometric | _pending_ |
+| Android / API | 16 / 36, security patch 2026-07-01, verified boot green |
+| StrongBox feature | **No.** `FEATURE_STRONGBOX_KEYSTORE` absent; KeyMint v3 in the TEE |
+| Key security level obtained | **TEE** (fallback path exercised) |
+| Attestation available | Yes, a 5-certificate chain (informational only) |
+| Class 3 biometric | Yes (fingerprint) |
+| Exception when signing without biometric | `SignatureException` ← `KeyStoreException: Key user not authenticated` (`KEY_USER_NOT_AUTHENTICATED`, "No operation auth token received"). This is enforced by keystore2/KeyMint, not by app code. |
+| Instrumented tests | 7/7 pass (`scripts/android-device-tests.sh`) |
+| Manual flow (generate → biometric sign → verify, tamper checks, unauthorized sign) | All pass, as reported by the tester on the device |
+
+### Known tooling issue
+
+`./gradlew connectedDebugAndroidTest` (AGP 9.4.1) exits with "There were
+failing tests" even though its own report shows 7/7 passed and the raw
+instrumentation result is `OK (7 tests)`. Use
+[`scripts/android-device-tests.sh`](../scripts/android-device-tests.sh)
+instead. It runs `am instrument` directly and fails unless the suite reports
+`OK`.

@@ -123,7 +123,7 @@ The test names are the planned names; the tests are written in the phase shown.
 |---|---|---|---|
 | D‑1 | Pairing authenticity | BLE LESC Numeric Comparison, with app keys exchanged inside the authenticated link | Uses the standard Bluetooth mechanism with no extra dependencies. It relies on the BT stacks' LESC implementations and on the user comparing codes. Alternative: QR code with a one-time secret. |
 | D‑2 | Where signatures are verified | In `phonekeyd` (Python), not in the C PAM module | Keeps the C code in root processes tiny, with no crypto or parsing. The daemon is fully trusted, but it holds nothing more sensitive than PAM itself. |
-| D‑3 | Key security level | StrongBox **detected at runtime** with TEE fallback. **Software keys are refused.** | The test device (Motorola Edge 50 Plus) may not have StrongBox. TEE is still hardware-isolated. |
+| D‑3 | Key security level | StrongBox **detected at runtime** with TEE fallback. **Software keys are refused.** | The test device (Motorola Edge 50 Fusion) has **no StrongBox**, as confirmed in Phase 1, so its keys are TEE-backed. TEE is still hardware-isolated. |
 | D‑4 | `setUnlockedDeviceRequired(true)` | On by default | Safer, because a locked phone never signs. But the user may need to unlock the phone *and then* pass BiometricPrompt, which is two steps. To be re-evaluated on the real device in Phase 1. Turning it off needs your approval. |
 | D‑5 | Attestation | **Informational only.** Recorded and displayed, never required. | Not requiring it means the verifier cannot prove the key is hardware-backed. It relies on the app's own check (D‑3). |
 | D‑6 | Biometric class | `BIOMETRIC_STRONG` only, no device-credential fallback in the prompt | Face unlock on many phones is Class 1/2 and won't work. After a lockout the user falls back to the laptop password. |
@@ -138,10 +138,9 @@ The test names are the planned names; the tests are written in the phase shown.
 
 - Per-use auth (timeout 0) **requires** `BiometricPrompt.CryptoObject(signature)`.
   Calling `sign()` without it throws. The Phase 1 tests exercise this.
-- `AUTH_BIOMETRIC_STRONG` accepts only Class 3 sensors. Motorola Edge 50 Plus:
-  the under-display fingerprint sensor is expected to be Class 3, and face
-  unlock probably is not. This will be verified in Phase 1 with
-  `BiometricManager.canAuthenticate(BIOMETRIC_STRONG)`.
+- `AUTH_BIOMETRIC_STRONG` accepts only Class 3 sensors. On the Motorola Edge 50
+  Fusion, `canAuthenticate(BIOMETRIC_STRONG)` succeeds with fingerprint
+  (verified in Phase 1).
 - StrongBox supports only P‑256 EC (which we use), and it is slower (hundreds of
   ms per signature). `StrongBoxUnavailableException` → retry TEE-backed.
 - `setInvalidatedByBiometricEnrollment(true)` → `KeyPermanentlyInvalidatedException`

@@ -38,8 +38,11 @@ before `@include common-auth`, without touching the shared file.
 
 | Item | Found |
 |---|---|
-| Android SDK / Studio / adb / Gradle | **Not installed** |
-| Test device | Motorola Edge 50 Plus. StrongBox availability unknown, so it is detected at runtime. |
+| Android toolchain | Android Studio 2026.1.4, SDK in `~/Android/Sdk` (platform 37, build-tools 36.0.0, platform-tools). Gradle 9.8.0 (wrapper), AGP 9.4.1, JDK 21. Gradle needs `-Djava.net.preferIPv4Stack=true` on this network (broken IPv6). |
+| Test device | Motorola **Edge 50 Fusion** (`cuscoi`, Snapdragon `parrot`), Android 16 / API 36, patch 2026-07-01, verified boot green |
+| Keystore | KeyMint v3 (`hardware_keystore=300`), **no StrongBox**. Keys are TEE-backed. Attestation works (5-cert chain). |
+| Biometrics | Fingerprint: Class 3 (usable). Face unlock present, but not offered by `BIOMETRIC_STRONG`. |
+| adb | Wireless debugging (`adb pair` + `adb connect`). USB did not enumerate with the cable tried. The connection drops when the phone sleeps. |
 
 ## Required before each phase (user action; nothing is installed automatically)
 
