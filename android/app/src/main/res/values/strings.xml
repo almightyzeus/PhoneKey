@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PhoneKey</string>
+    <string name="phase_label">Phase 1 · local crypto test (no BLE)</string>
+    <string name="generate_key">Generate test key</string>
+    <string name="sign_challenge">Sign test challenge (biometric)</string>
+    <string name="sign_unauthorized">Try signing without biometric</string>
+    <string name="delete_key">Delete test key</string>
+</resources>

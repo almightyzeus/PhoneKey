@@ -456,6 +456,9 @@ Every error is fail-closed: the requested action is **not** authorized.
   are never valid.
 - The verifier checks deadlines against its own monotonic clock, so it never
   needs to trust the authenticator's clock.
+- ECDSA signatures are malleable: `(r, s)` and `(r, n−s)` both verify.
+  Signature bytes are therefore never used as identifiers or replay keys. Only
+  `request_id` and the pending table are.
 
 ## 9. Versioning
 
