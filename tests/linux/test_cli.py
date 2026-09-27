@@ -21,7 +21,8 @@ class CliTest(unittest.TestCase):
         self.state = Path(tmp.name)
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess:
-        env = {**os.environ, "PHONEKEY_STATE_DIR": str(self.state)}
+        env = {**os.environ, "PHONEKEY_STATE_DIR": str(self.state),
+               "PHONEKEY_SOCKET": str(self.state / "no-daemon.sock")}
         return subprocess.run([sys.executable, str(CLI), *args], capture_output=True, text=True, env=env,
                               timeout=60)
 
@@ -39,10 +40,10 @@ class CliTest(unittest.TestCase):
         self.assertFalse((self.state / "devices").exists())
         self.assertEqual([], list(self.state.iterdir()))
 
-    def test_test_without_simulate_explains_phase(self):
+    def test_test_without_daemon_explains(self):
         result = self.run_cli("test")
         self.assertEqual(2, result.returncode)
-        self.assertIn("Phase 3", result.stderr)
+        self.assertIn("phonekeyd is not running", result.stderr)
 
     def test_status_and_devices_with_empty_registry(self):
         status = self.run_cli("status")

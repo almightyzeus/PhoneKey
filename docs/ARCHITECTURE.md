@@ -7,39 +7,39 @@ model is in [../protocol/SECURITY.md](../protocol/SECURITY.md).
 ## 1. Components
 
 ```
-Android phone (authenticator)                     Linux Mint laptop (verifier)
-┌───────────────────────────────────┐            ┌──────────────────────────────────────────┐
-│ PhoneKeyService (foreground,      │            │ phonekeyd  (Python 3, user `phonekey`)   │
-│   connectedDevice)                │            │  ├─ ble/gatt_server  BlueZ GattManager1  │
-│  ├─ GattClient  ──────────────────┼── BLE ────►│  ├─ ble/advertiser   LEAdvertisingMgr1   │
-│  │   autoConnect to bonded laptop │   LESC     │  ├─ ble/agent        Agent1 (pairing)    │
-│  ├─ ProtocolCodec (TLV, §3)       │  bonded    │  ├─ protocol/codec   TLV (§3)            │
-│  └─ RequestValidator              │            │  ├─ crypto           ECDSA P-256 verify  │
-│ AuthRequestActivity               │            │  ├─ registry         /var/lib/phonekey   │
-│  └─ BiometricPrompt + CryptoObject│            │  ├─ challenges       in-memory, 1-use    │
-│ KeyManager                        │            │  └─ ipc              /run/phonekey/*.sock│
-│  └─ AndroidKeyStore P-256         │            └───────────▲──────────────────▲───────────┘
-│     (StrongBox → TEE fallback)    │                        │ unix socket      │
-│ PairingActivity, MainActivity,    │            ┌───────────┴───────┐  ┌───────┴──────────┐
-│ SettingsActivity                  │            │ pam_phonekey.so   │  │ phonekey (CLI,   │
-└───────────────────────────────────┘            │ (C, ~150 lines,   │  │  Python)         │
-                                                 │  no crypto)       │  └──────────────────┘
-                                                 └───────────────────┘
-                                                   loaded by sudo / cinnamon-screensaver
+Android phone (authenticator, BLE peripheral)       Linux Mint laptop (verifier, BLE central)
+┌──────────────────────────────────────┐          ┌───────────────────────────────────────────┐
+│ PhoneKeyService (foreground,         │          │ phonekeyd (Python 3, unprivileged)        │
+│   connectedDevice)                   │          │  ├─ ble.py      BlueZ central: scan for   │
+│  ├─ GATT server: A2V (indicate),     │◄── BLE ──│  │              PhoneKey UUIDs, connect,  │
+│  │   V2A (write); MITM-bond only     │   LESC   │  │              bond, subscribe, write    │
+│  ├─ advertises only while its laptop │  bonded  │  ├─ core.py     peers, pairing, auth      │
+│  │   is disconnected (or pairing)    │          │  ├─ verifier.py challenges, verification │
+│  └─ AuthenticatorCore (codec, rules) │          │  ├─ registry.py paired devices            │
+│ AuthRequestActivity                  │          │  └─ daemon.py   Unix socket (SO_PEERCRED) │
+│  └─ BiometricPrompt + CryptoObject   │          └──────────────▲─────────────────▲──────────┘
+│ PairingActivity, MainActivity        │                         │                 │
+│ DeviceKeyStore: AndroidKeyStore P-256│          ┌──────────────┴─────┐  ┌────────┴─────────┐
+│   (StrongBox → TEE fallback)         │          │ pam_phonekey.so    │  │ phonekey (CLI)   │
+└──────────────────────────────────────┘          │ (C, no crypto, P5) │  └──────────────────┘
+                                                  └────────────────────┘
+      Pairing codes are confirmed in Android's dialog and in the desktop's Blueman dialog.
 ```
 
 ### Why these choices
 
-- **The laptop is the GATT peripheral and the phone is the central.** The
-  laptop has a stable public address and can advertise cheaply. BlueZ's GATT
-  server API is well documented with Python examples. Android maintains
-  `autoConnect` connections to bonded devices well from a foreground service.
+- **The phone is the peripheral and the laptop is the central.** The MVP laptop's
+  Realtek RTL8822CU controller rejects every LE advertisement, but scanning and
+  connecting work. Roles don't matter for security (SECURITY.md D‑11). They also
+  make messages point-to-point: the laptop writes to one specific phone.
+- **No BlueZ agent, no advertising, no D-Bus policy on the laptop.** The daemon
+  only scans, connects and uses GATT as a client, which ordinary users may do.
+  Nothing is installed during development.
 - **Python daemon.** It uses only packages already on Mint
   (`python3-cryptography`, `python3-dbus`, `python3-gi`), and it is
   memory-safe for parsing untrusted BLE input.
-- **Thin C PAM module.** PAM modules must be shared objects loaded into
-  `sudo`/`cinnamon-screensaver`. Keeping them free of crypto and parsing keeps
-  that attack surface tiny (SECURITY.md D‑2).
+- **Thin C PAM module (Phase 5).** Keeps crypto and parsing out of the
+  `sudo`/`cinnamon-screensaver` processes (SECURITY.md D‑2).
 
 ## 2. Processes, users, files
 

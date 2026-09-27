@@ -1,0 +1,53 @@
+"""Local IPC authorization (SECURITY.md T-7: unprivileged local attackers)."""
+
+import os
+import pwd
+import unittest
+
+from phonekey.daemon import ACTIONS, authorize
+
+ME = os.getuid()
+MY_NAME = pwd.getpwuid(ME).pw_name
+OTHER_UID = 0 if ME != 0 else 1
+
+
+def check(op, uid, account=None, *, system_mode):
+    return authorize(op, uid, account, daemon_uid=ME, system_mode=system_mode)
+
+
+class AuthorizeTest(unittest.TestCase):
+    def test_status_is_open(self):
+        self.assertIsNone(check("status", 12345, system_mode=True))
+
+    def test_auth_only_for_own_account(self):
+        for system_mode in (False, True):
+            with self.subTest(system_mode=system_mode):
+                self.assertIsNone(check("auth", ME, MY_NAME, system_mode=system_mode))
+                if ME != 0:
+                    self.assertIsNotNone(check("auth", ME, "root", system_mode=system_mode))
+                    self.assertIsNotNone(check("auth", ME, None, system_mode=system_mode))
+
+    def test_root_may_authenticate_any_account(self):
+        self.assertIsNone(check("auth", 0, "someone", system_mode=True))
+
+    def test_unknown_uid_refused(self):
+        self.assertIsNotNone(check("auth", 2**31 - 7, "nobody-here", system_mode=True))
+
+    def test_pairing_requires_root_in_system_mode(self):
+        if ME != 0:
+            self.assertIsNotNone(check("pair", ME, system_mode=True))
+        self.assertIsNone(check("pair", 0, system_mode=True))
+
+    def test_pairing_in_dev_mode_only_for_daemon_owner(self):
+        self.assertIsNone(check("pair", ME, system_mode=False))
+        self.assertIsNotNone(check("pair", ME + 1, system_mode=False))
+
+    def test_unknown_operation_refused(self):
+        self.assertIsNotNone(check("unpair", 0, system_mode=True))
+
+    def test_actions_are_a_fixed_set(self):
+        self.assertEqual({"phonekey.test", "linux.sudo", "linux.unlock", "linux.login"}, set(ACTIONS.values()))
+
+
+if __name__ == "__main__":
+    unittest.main()

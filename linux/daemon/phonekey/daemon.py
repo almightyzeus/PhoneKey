@@ -1,0 +1,304 @@
+"""phonekeyd: BLE verifier daemon with a local Unix-socket API.
+
+Development mode (default): runs as the invoking user, state in
+~/.local/state/phonekey-dev, socket in $XDG_RUNTIME_DIR/phonekey/. Only the
+same user may connect. System mode (Phase 5) runs as the `phonekey` user.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import pwd
+import signal
+import socket
+import stat
+import struct
+import sys
+from pathlib import Path
+
+from . import crypto
+from .core import DaemonCore, Event
+from .paths import default_socket_path, default_state_dir
+from .registry import Registry
+from .verifier import Verifier
+
+log = logging.getLogger("phonekeyd")
+
+MAX_REQUEST = 4096
+CLIENT_IDLE_TIMEOUT = 10  # seconds to send a request after connecting
+PAIRING_WINDOW = 120.0
+# The phone displays these; clients pick one, they cannot supply free text.
+ACTIONS = {"test": "phonekey.test", "sudo": "linux.sudo", "unlock": "linux.unlock", "login": "linux.login"}
+
+
+def peer_uid(sock: socket.socket) -> int:
+    _pid, uid, _gid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                          struct.calcsize("3i")))
+    return uid
+
+
+def authorize(op: str, uid: int, account: str | None, *, daemon_uid: int, system_mode: bool) -> str | None:
+    """Returns None if allowed, else the reason. See SECURITY.md §4."""
+    if op == "status":
+        return None
+    if op == "pair":
+        if system_mode:
+            return None if uid == 0 else "pairing requires root (sudo phonekey pair)"
+        return None if uid == daemon_uid else "not allowed"
+    if op == "auth":
+        if uid == 0:
+            return None
+        try:
+            name = pwd.getpwuid(uid).pw_name
+        except KeyError:
+            return "unknown caller"
+        return None if account == name else "may only authenticate your own account"
+    return "unknown operation"
+
+
+class Client:
+    def __init__(self, server: IpcServer, sock: socket.socket):
+        from gi.repository import GLib
+
+        self.server, self.sock = server, sock
+        self.uid = peer_uid(sock)
+        self.buffer = b""
+        self.closed = False
+        self.on_close = None
+        self.on_line = None  # follow-up lines after the request (pairing confirmation)
+        self._watch = GLib.io_add_watch(sock.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self._readable)
+        self._idle = GLib.timeout_add_seconds(CLIENT_IDLE_TIMEOUT, self._idle_timeout)
+
+    def _idle_timeout(self):
+        self._idle = None
+        if not self.closed and self.buffer is not None:
+            self.close()
+        return False
+
+    def _readable(self, fd, condition):
+        try:
+            data = self.sock.recv(MAX_REQUEST)
+        except OSError:
+            data = b""
+        if not data:
+            self.close()
+            return False
+        if self.buffer is None:  # request already received
+            if self.on_line is not None:
+                self.pending_lines = getattr(self, "pending_lines", b"") + data
+                while b"\n" in self.pending_lines:
+                    line, self.pending_lines = self.pending_lines.split(b"\n", 1)
+                    self.on_line(line)
+                if len(self.pending_lines) > MAX_REQUEST:
+                    self.close()
+                    return False
+            return True
+        self.buffer += data
+        if b"\n" in self.buffer:
+            line, self.buffer = self.buffer.split(b"\n", 1)[0], None
+            self._cancel_idle()
+            self.server.handle(self, line)
+        elif len(self.buffer) > MAX_REQUEST:
+            self.close()
+            return False
+        return True
+
+    def _cancel_idle(self):
+        from gi.repository import GLib
+
+        if self._idle is not None:
+            GLib.source_remove(self._idle)
+            self._idle = None
+
+    def send(self, event: Event, final: bool = False) -> None:
+        if self.closed:
+            return
+        try:
+            self.sock.sendall(json.dumps(event).encode() + b"\n")
+        except OSError:
+            self.close()
+            return
+        if final:
+            self.close()
+
+    def close(self) -> None:
+        from gi.repository import GLib
+
+        if self.closed:
+            return
+        self.closed = True
+        self._cancel_idle()
+        GLib.source_remove(self._watch)
+        self.sock.close()
+        if self.on_close:
+            self.on_close()
+
+
+class IpcServer:
+    def __init__(self, path: Path, core: DaemonCore, *, system_mode: bool, hostname: str):
+        self.path, self.core, self.system_mode, self.hostname = path, core, system_mode, hostname
+        self.daemon_uid = os.getuid()
+        self.sock: socket.socket | None = None
+
+    def start(self) -> None:
+        from gi.repository import GLib
+
+        self.path.parent.mkdir(mode=0o700 if not self.system_mode else 0o755, parents=True, exist_ok=True)
+        if self.path.exists() or self.path.is_symlink():
+            if not stat.S_ISSOCK(os.lstat(self.path).st_mode):
+                raise RuntimeError(f"{self.path} exists and is not a socket")
+            self.path.unlink()
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.bind(str(self.path))
+        os.chmod(self.path, 0o666 if self.system_mode else 0o600)  # authorization is by SO_PEERCRED
+        self.sock.listen(8)
+        GLib.io_add_watch(self.sock.fileno(), GLib.IO_IN, self._accept)
+        log.info("listening on %s", self.path)
+
+    def stop(self) -> None:
+        if self.sock is not None:
+            self.sock.close()
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _accept(self, fd, condition):
+        conn, _ = self.sock.accept()
+        Client(self, conn)
+        return True
+
+    def handle(self, client: Client, line: bytes) -> None:
+        try:
+            request = json.loads(line)
+            op = request["op"]
+        except (ValueError, KeyError, TypeError):
+            client.send({"result": "error", "reason": "bad request"}, final=True)
+            return
+        account = request.get("account")
+        reason = authorize(op, client.uid, account, daemon_uid=self.daemon_uid, system_mode=self.system_mode)
+        if reason is not None:
+            log.warning("refused %s from uid %d: %s", op, client.uid, reason)
+            client.send({"result": "error", "reason": reason}, final=True)
+            return
+
+        if op == "status":
+            client.send({"result": "ok", "mode": "system" if self.system_mode else "development",
+                         **self.core.status()}, final=True)
+        elif op == "pair":
+            pair_account = account or pwd.getpwuid(client.uid).pw_name
+            client.on_close = self.core.cancel_pairing  # Ctrl-C in the CLI ends the window
+            client.on_line = self._pairing_answer
+            self.core.start_pairing(pair_account, PAIRING_WINDOW,
+                                    lambda e: self._forward(client, e))
+        elif op == "auth":
+            action = ACTIONS.get(request.get("action", ""))
+            if action is None:
+                client.send({"result": "error", "reason": "unknown action"}, final=True)
+                return
+            log.info("auth request: account=%s action=%s", account, action)
+            self.core.authenticate(account, action, self.hostname, lambda e: self._forward(client, e))
+
+    def _pairing_answer(self, line: bytes) -> None:
+        try:
+            accepted = json.loads(line).get("confirm") is True
+        except (ValueError, AttributeError):
+            accepted = False
+        self.core.answer_bond_confirmation(accepted)
+
+    @staticmethod
+    def _forward(client: Client, event: Event) -> None:
+        final = "result" in event
+        if final:
+            client.on_close = None
+            log.info("result: %s", {k: v for k, v in event.items() if k in ("result", "reason")})
+        client.send(event, final=final)
+
+
+class GLibScheduler:
+    def call_later(self, seconds, callback):
+        from gi.repository import GLib
+
+        def fire():
+            callback()
+            return False
+
+        return GLib.timeout_add(int(seconds * 1000), fire)
+
+    def cancel(self, handle):
+        from gi.repository import GLib
+
+        GLib.source_remove(handle)
+
+
+class _Transport:
+    """Late-bound BLE transport for DaemonCore."""
+
+    central = None
+
+    def send(self, peer_id, frame):
+        self.central.send(peer_id, frame)
+
+    def set_pairing_mode(self, enabled):
+        self.central.set_pairing_mode(enabled)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="phonekeyd", description="PhoneKey BLE verifier daemon (pre-alpha).")
+    parser.add_argument("--state-dir", type=Path, default=default_state_dir())
+    parser.add_argument("--socket", type=Path, default=default_socket_path())
+    parser.add_argument("--system", action="store_true", help="system service mode (Phase 5)")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+    import dbus
+    import dbus.mainloop.glib
+    from gi.repository import GLib
+
+    from .ble import BleCentral, find_adapter
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+    adapter = find_adapter(bus)
+    if adapter is None:
+        log.error("no Bluetooth adapter found")
+        return 1
+
+    hostname = socket.gethostname()
+    os.umask(0o077)
+    key = crypto.load_or_create_key(args.state_dir / "verifier_key.pem")
+    verifier = Verifier(key, Registry(args.state_dir), display_name=hostname)
+    transport = _Transport()
+    core = DaemonCore(verifier, transport, GLibScheduler())
+    transport.central = BleCentral(bus, adapter, core.on_connect, core.on_frame, core.on_disconnect,
+                                   core.on_bond_confirmation)
+    ipc = IpcServer(args.socket, core, system_mode=args.system, hostname=hostname)
+    loop = GLib.MainLoop()
+    log.info("verifier %s (%s), state %s", verifier.verifier_id[:4].hex(), hostname, args.state_dir)
+
+    def shutdown(*_):
+        log.info("shutting down")
+        transport.central.stop()
+        ipc.stop()
+        loop.quit()
+        return False
+
+    def failed(reason):
+        log.error(reason)
+        shutdown()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, shutdown)
+    ipc.start()
+    transport.central.start(on_ready=lambda: log.info("ready"), on_error=failed)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

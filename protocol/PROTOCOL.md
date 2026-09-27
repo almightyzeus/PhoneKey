@@ -248,24 +248,25 @@ never an identity.
 
 ### 5.1 Transport pairing (BLE bond)
 
-1. An administrator runs `sudo phonekey pair` on the verifier. For a bounded
-   window (default 120 s) the verifier:
-   - becomes Pairable,
-   - registers a BlueZ pairing agent with capability `DisplayYesNo`,
-   - advertises the PhoneKey service with the *pairing-mode* flag (§6.1).
-2. On the phone the user taps **Add computer**. The app scans for the PhoneKey
-   service UUID with the pairing flag and connects.
-3. Every PhoneKey characteristic requires an **encrypted, MITM-authenticated**
-   link (BlueZ flags `encrypt-authenticated-read/write`). The first access
-   therefore triggers **LE Secure Connections Numeric Comparison** pairing:
+1. On the phone the user taps **Add computer**. For a bounded window (120 s)
+   the authenticator advertises the **pairing UUID** (§6.1) instead of the
+   service UUID.
+2. The user runs `phonekey pair` on the verifier. For a bounded window
+   (120 s) the verifier connects to phones advertising the pairing UUID, and
+   only to those. Outside a pairing window it connects only to phones it is
+   already bonded with.
+3. The verifier bonds with the phone (`Device1.Pair`). Every PhoneKey
+   attribute on the phone requires an **encrypted, MITM-authenticated** link
+   (`PERMISSION_*_ENCRYPTED_MITM`), so only an authenticated bond works. Both
+   stacks support LE Secure Connections, so this is **Numeric Comparison**:
    - Android shows its system pairing dialog with a 6-digit number,
-   - the verifier CLI shows the number it received from BlueZ
-     (`Agent1.RequestConfirmation`),
-   - the user confirms on both sides that the numbers match.
+   - the laptop's desktop Bluetooth agent (Blueman on Linux Mint) shows the
+     number it received from BlueZ,
+   - the user confirms on both sides only if the numbers match.
 
-   If the link is not authenticated, for example because legacy or "Just Works"
-   pairing was negotiated, BlueZ refuses access and pairing stops. Outside the
-   pairing window the agent rejects all pairing attempts.
+   PhoneKey registers **no** BlueZ agent of its own. If no agent is running,
+   BlueZ falls back to unauthenticated "Just Works" pairing, the phone refuses
+   access to its characteristics, and pairing fails safely.
 
 ### 5.2 Application pairing (key exchange)
 
@@ -343,25 +344,46 @@ For the MVP:
 
 A future version may offer an opt-in policy that requires valid attestation.
 
+**MVP status:** the Android app currently omits the chain. At about 3 KB it
+made pairing responses long enough to drop the link on the MVP laptop's
+controller. The laptop records "not provided". It will be re-enabled once
+large transfers are proven reliable with the 244-byte frame limit.
+
 ## 6. BLE transport binding
 
-### 6.1 GATT layout
+### 6.1 Roles and GATT layout
 
-The verifier is the **GATT server / peripheral**. The authenticator is the
-**GATT client / central**.
+The authenticator (phone) is the **peripheral / GATT server**. The verifier
+(laptop) is the **central / GATT client**. The roles were chosen this way
+because some laptop controllers cannot advertise; the laptop of the MVP (a
+Realtek RTL8822CU) rejects every LE advertisement. Roles have no security
+meaning: identity and authorization rest only on signatures.
 
-| Item | UUID | Properties |
+| Item | UUID | Properties on the phone |
 |---|---|---|
 | PhoneKey service | `eb109ed5-92be-4d34-a98d-61bb7f350b41` | primary |
-| RX characteristic (authenticator → verifier) | `f3c11509-8693-4342-ae5b-8d0f7e6e50fa` | write (with response), `encrypt-authenticated-write` |
-| TX characteristic (verifier → authenticator) | `955060b9-442a-41f4-bea8-251ea1f42f85` | indicate, `encrypt-authenticated-read` |
+| A2V characteristic (authenticator → verifier) | `f3c11509-8693-4342-ae5b-8d0f7e6e50fa` | indicate; CCCD read/write need an encrypted MITM link |
+| V2A characteristic (verifier → authenticator) | `955060b9-442a-41f4-bea8-251ea1f42f85` | write (with response); needs an encrypted MITM link |
+| Pairing advertisement | `419b7d95-95a6-441f-a103-eb24d90499e0` | advertised instead of the service UUID in pairing mode |
 
-The verifier advertises the service UUID in connectable advertisements. Service
-data for that UUID holds one byte of flags: bit 0 set means *pairing mode*.
-Advertisements carry no identity and no secret.
+The phone advertises (connectable, no device name, no other data) only while a
+paired verifier is not connected, or during pairing. Advertisements carry no
+identity and no secret. The phone's address is a rotating private address; the
+verifier recognises a bonded phone through the bond's identity resolving key.
 
-After bonding, the authenticator keeps a background connection
-(`autoConnect = true`) to the bonded verifier from an Android foreground service.
+### 6.3 Connection handshake
+
+1. The verifier connects, bonds if needed, discovers the service, and
+   subscribes to A2V indications.
+2. On subscription the phone sends `STATUS {READY}`:
+   - with `verifier_id` and `device_id` if the laptop is a paired verifier
+     (looked up by its Bluetooth address, which is only a routing hint), or
+   - with no ids when the phone is in pairing mode, which asks the verifier
+     for a `PAIR_REQUEST` if its own pairing window is open.
+3. The verifier uses the ids in `STATUS` only to route requests and show
+   status. They are unauthenticated claims. A false claim can at most cause a
+   request to be sent to the wrong phone, which then fails. The decision
+   always rests on the device key's signature.
 
 ### 6.2 Framing
 
@@ -372,8 +394,13 @@ message is split into frames:
 byte 0  msg_no  u8   increments per message per direction (wraps)
 byte 1  frag    u8   0, 1, 2, … within the message
 byte 2  flags   u8   bit 0 = LAST; other bits MUST be 0
-byte 3… payload      up to (ATT_MTU − 3) − 3 bytes
+byte 3… payload      up to min(ATT_MTU − 3, 244) − 3 bytes
 ```
+
+A frame (header + payload) never exceeds 244 bytes, even when the negotiated
+ATT MTU is larger. That is one LE data PDU with Data Length Extension (251
+bytes) minus the L2CAP and ATT headers. Larger frames were observed to make a
+laptop controller (Realtek RTL8822CU) drop the link during bursts.
 
 The receiver discards the partial message and sends `ERROR MALFORMED` when:
 
@@ -439,11 +466,14 @@ Every error is fail-closed: the requested action is **not** authorized.
    not prompt**.
 3. Verify the verifier signature. If it fails, send `BAD_SIGNATURE` and **do
    not prompt**.
-4. Check that `device_id` matches the key stored for that verifier.
+4. If `device_id` is not the key stored for that verifier, **ignore the request
+   silently**. Another phone may be the addressee, and an `ERROR` from this
+   phone would cancel that phone's pending request.
 5. If a prompt is already showing, send `BUSY`. Apply a rate limit (default:
    at most 5 requests per verifier per minute).
-6. Show a notification or activity with the verifier name, `action`,
-   `resource`, and `account`. Launch `BiometricPrompt` with a `CryptoObject`
+6. Check that `account` equals the account stored at pairing, then show a
+   notification or activity with the verifier name, `action`, `resource`, and
+   `account`. Launch `BiometricPrompt` with a `CryptoObject`
    that wraps a `Signature` initialized with the device key.
 7. On biometric success, sign `AUTH_RESPONSE` and send it. On failure or
    cancel, send `BIOMETRIC_FAILED` / `USER_DENIED`. On

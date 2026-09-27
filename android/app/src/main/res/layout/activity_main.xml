@@ -11,16 +11,59 @@
         android:padding="16dp">
 
         <TextView
+            android:id="@+id/status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?android:attr/textAppearanceMedium" />
+
+        <Button
+            android:id="@+id/bluetooth_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/turn_on_bluetooth"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/full_screen_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/allow_full_screen"
+            android:visibility="gone" />
+
+        <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/phase_label"
-            android:textAppearance="?android:attr/textAppearanceMedium" />
+            android:layout_marginTop="16dp"
+            android:text="@string/paired_computers"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:id="@+id/paired_list"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <Button
+            android:id="@+id/add_computer_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/add_computer" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/diagnostics"
+            android:textStyle="bold" />
 
         <TextView
             android:id="@+id/device_text"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="8dp"
             android:fontFamily="monospace"
             android:textIsSelectable="true" />
 
@@ -28,7 +71,6 @@
             android:id="@+id/generate_button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
             android:text="@string/generate_key" />
 
         <Button

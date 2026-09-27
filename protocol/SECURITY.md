@@ -82,12 +82,12 @@ The test names are the planned names; the tests are written in the phase shown.
 | T‑3 | **Stolen phone.** Attacker holds the phone. | FAIL unless the attacker passes a Class 3 biometric | Per-use `AUTH_BIOMETRIC_STRONG` key; `setUnlockedDeviceRequired`. Device credential (PIN) alone cannot unlock the key. | Instrumented `KeyPolicyTest.signWithoutBiometricFails` (P1) |
 | T‑4 | **Unknown phone.** A different Android device (or a different key on the same phone) answers. | FAIL | Only keys in the registry for that `account` are accepted. `device_id = H(pubkey)`, not a name or MAC. | `test_unregistered_key_rejected` (P2), live test (P4) |
 | T‑5 | **Phone already unlocked, no biometric for this request.** | FAIL | Auth timeout 0: Keystore demands a `CryptoObject`-bound biometric for **each** signature. An unlocked screen gives no authorization. | `KeyPolicyTest.signWithoutBiometricFails` (P1) |
-| T‑6 | **BLE spoofing.** Attacker advertises the laptop's or phone's name, or clones a MAC address. | FAIL | Names and addresses are metadata only. A fake verifier cannot sign `AUTH_REQUEST`, so the phone doesn't prompt (`UNKNOWN_VERIFIER`/`BAD_SIGNATURE`). A fake phone cannot produce a device-key signature. | `test_phone_ignores_requests_from_unknown_verifier` (P2, simulator), Android equivalent (P3), live test (P4) |
+| T‑6 | **BLE spoofing.** Attacker advertises the phone's service UUID, or connects to the phone pretending to be the laptop. | FAIL | Names and addresses are metadata only. The laptop connects only to bonded phones (or pairing-UUID phones during its own pairing window), and a fake phone cannot produce a device-key signature. A fake laptop cannot bond without the user confirming a code, and cannot sign `AUTH_REQUEST`, so the phone doesn't prompt (`UNKNOWN_VERIFIER`/`BAD_SIGNATURE`). | `test_phone_ignores_requests_from_unknown_verifier` (P2, simulator), Android equivalent (P3), live test (P4) |
 | T‑7 | **Laptop compromise.** Attacker is root on the laptop. | **Not defended.** | Out of scope. Root can rewrite PAM or the registry. An *unprivileged* local attacker is handled: it cannot write the registry, cannot impersonate `phonekeyd` (socket owned by `phonekey`, peer checked), and cannot request auth for other accounts (SO_PEERCRED). | `test_ipc_rejects_foreign_account` (P5) |
 | T‑8 | **Lost phone.** | Revocable | `sudo phonekey unpair <device>` deletes the registry entry and works without the phone or the daemon. `sudo phonekey disable` removes PAM integration. The password still works. | `test_unpaired_device_rejected` (P2), manual recovery drill (P5) |
 | T‑9 | **Prompt fatigue / phishing.** Attacker triggers requests hoping the user approves by reflex. | Mitigated | Only signed requests from paired verifiers prompt. At most one prompt at a time. Rate limit of 5/min per verifier. The prompt shows the verifier, action, target, and account. | `test_busy_when_request_pending` (P2, verifier side); `test_busy_when_prompt_open`, `test_rate_limit` (P3, phone side) |
 | T‑10 | **Malformed input** over BLE or IPC (overflow, huge messages, bad TLV). | Rejected, no crash | Strict codec (§3 of PROTOCOL.md) with fixed limits. The daemon is Python (memory-safe). The C PAM shim parses a single fixed short token. Framing caps. | Codec vectors and fuzz tests `tests/protocol/test_codec_fuzz.py` (P2) |
-| T‑11 | **Pairing MITM.** Attacker inserts itself during `phonekey pair`. | FAIL, if the user compares the codes | LESC Numeric Comparison. Characteristics require an authenticated link. Pairing is possible only during an explicit root-initiated window. | Manual pairing test with mismatched code (P3) |
+| T‑11 | **Pairing MITM.** Attacker inserts itself during `phonekey pair`. | FAIL, if the user compares the codes | LESC Numeric Comparison. The phone's characteristics require an authenticated link. App-level pairing needs **both** windows open: `phonekey pair` on the laptop and **Add computer** on the phone. The user also confirms the laptop's name, account and key fingerprint on the phone before the new key is created. | Manual pairing test with mismatched code (P3) |
 | T‑12 | **Denial of service** (jamming, disconnects, BUSY spam). | Password fallback | PhoneKey is `sufficient`. Unavailable, timeout, and error all fall back to the password. Timeouts are bounded. | `test_disconnect_mid_auth_fails_closed`, PAM tests with daemon stopped or phone absent (P3/P5) |
 | T‑13 | **Downgrade / cross-protocol.** | FAIL | A single accepted `version`. Signature labels are domain-separated and include the version. | `test_wrong_label_rejected`, `test_unknown_version_rejected` (P2) |
 | T‑14 | **Secrets in logs.** | None logged | Log only `request_id`, a short device-id prefix, the action, and the result. Never log keys, full messages, or attestation blobs. | Log review checklist per phase |
@@ -114,22 +114,26 @@ The test names are the planned names; the tests are written in the phase shown.
   builds is out of scope for the MVP.
 - **R‑6 Biometric spoofing.** PhoneKey inherits the phone's Class 3 biometric
   false-accept rate and spoof resistance.
-- **R‑7 Advertisement fingerprinting.** The laptop advertises the PhoneKey
-  service UUID, which reveals that PhoneKey is installed. It reveals no identity.
+- **R‑7 Advertisement fingerprinting.** While not connected to its laptop, the
+  phone advertises the fixed PhoneKey service UUID. Its Bluetooth address
+  rotates, but the UUID lets a nearby observer notice that *a* PhoneKey user is
+  present. It reveals no identity or keys. Mitigation: the phone advertises only
+  while a paired laptop is disconnected.
 
 ## 7. Security-sensitive decisions (need explicit sign-off)
 
 | ID | Decision | Choice | Trade-off |
 |---|---|---|---|
-| D‑1 | Pairing authenticity | BLE LESC Numeric Comparison, with app keys exchanged inside the authenticated link | Uses the standard Bluetooth mechanism with no extra dependencies. It relies on the BT stacks' LESC implementations and on the user comparing codes. Alternative: QR code with a one-time secret. |
+| D‑1 | Pairing authenticity | BLE LESC Numeric Comparison (phone dialog and the desktop's Blueman dialog), with app keys exchanged inside the authenticated link. PhoneKey registers no BlueZ agent. | Uses the standard Bluetooth mechanism with no extra dependencies. It relies on the BT stacks' LESC implementations and on the user comparing codes. Alternative: QR code with a one-time secret. |
 | D‑2 | Where signatures are verified | In `phonekeyd` (Python), not in the C PAM module | Keeps the C code in root processes tiny, with no crypto or parsing. The daemon is fully trusted, but it holds nothing more sensitive than PAM itself. |
 | D‑3 | Key security level | StrongBox **detected at runtime** with TEE fallback. **Software keys are refused.** | The test device (Motorola Edge 50 Fusion) has **no StrongBox**, as confirmed in Phase 1, so its keys are TEE-backed. TEE is still hardware-isolated. |
 | D‑4 | `setUnlockedDeviceRequired(true)` | On by default | Safer, because a locked phone never signs. But the user may need to unlock the phone *and then* pass BiometricPrompt, which is two steps. To be re-evaluated on the real device in Phase 1. Turning it off needs your approval. |
 | D‑5 | Attestation | **Informational only.** Recorded and displayed, never required. | Not requiring it means the verifier cannot prove the key is hardware-backed. It relies on the app's own check (D‑3). |
 | D‑6 | Biometric class | `BIOMETRIC_STRONG` only, no device-credential fallback in the prompt | Face unlock on many phones is Class 1/2 and won't work. After a lockout the user falls back to the laptop password. |
-| D‑7 | Daemon privilege | Dedicated `phonekey` system user in group `bluetooth`, not root | Needs a BlueZ D-Bus policy check in Phase 3. If BlueZ requires root for GATT registration, this is re-raised before any change. |
+| D‑7 | Daemon privilege | Runs **unprivileged**. In development it runs as the user from the repo, with no installation and no D-Bus policy file, because BlueZ's stock policy lets any user use the central role. The system service (Phase 5) runs as a dedicated `phonekey` user. | Verified on the MVP laptop: scanning, connecting and GATT client access need no privileges. |
 | D‑8 | PAM placement | `auth sufficient pam_phonekey.so` added to **one service file** (`/etc/pam.d/sudo` first) before `@include common-auth`. `common-auth` is never edited. | Limits the blast radius. Each service is enabled explicitly. |
 | D‑9 | Replay state in memory only | Yes | A restart invalidates in-flight requests, which is the safe direction. |
+| D‑11 | BLE roles | Phone = peripheral (GATT server, advertises), laptop = central | The MVP laptop's Realtek RTL8822CU controller rejects all LE advertising. Roles carry no security meaning (identity is signatures). Costs: the phone advertises while its laptop is not connected (low-power mode), and see R‑7. |
 | D‑10 | Optional hardening: BlueZ `SecureConnections = only` in `/etc/bluetooth/main.conf` | **Not applied** in the MVP | It would prevent legacy pairing system-wide, which could affect your other BT devices. Changing it needs explicit approval. |
 
 ## 8. Platform constraints
@@ -159,9 +163,12 @@ The test names are the planned names; the tests are written in the phase shown.
 
 ### 8.2 Linux Mint / BlueZ / PAM
 
-- BlueZ 5.72 over D-Bus: `GattManager1` (GATT server), `LEAdvertisingManager1`
-  (4 instances), `AgentManager1` (pairing agent). The adapter supports both
-  central and peripheral roles.
+- BlueZ 5.72 over D-Bus. The daemon uses only the **central** role: LE
+  discovery filtered to PhoneKey UUIDs, `Device1.Connect/Pair`, and the remote
+  GATT characteristics. The adapter reports peripheral support, but its
+  controller (Realtek RTL8822CU, firmware 0x0cc6d2e3) rejects every LE
+  advertisement with *Invalid Parameters* (D‑11).
+- Pairing confirmation is shown by the desktop's default agent (Blueman).
 - `sudo` runs PAM as **root**. `cinnamon-screensaver` runs PAM **as the
   logged-in user**. The daemon socket must therefore be connectable by users,
   and must authorize requests by SO_PEERCRED uid.

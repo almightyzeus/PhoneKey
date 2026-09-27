@@ -42,8 +42,12 @@ class SimulatedAuthenticator:
         })
         return codec.with_signature(unsigned, crypto.sign(self._key, crypto.LABEL_PAIR_RESPONSE, unsigned))
 
-    def handle_auth_request(self, data: bytes, *, approve: bool = True) -> bytes:
-        """Returns AUTH_RESPONSE, or ERROR without prompting for anything suspicious."""
+    def handle_auth_request(self, data: bytes, *, approve: bool = True) -> bytes | None:
+        """Returns AUTH_RESPONSE, or ERROR without prompting for anything suspicious.
+
+        Requests addressed to another device are ignored (None): indications reach
+        every subscribed phone, and an ERROR from us would cancel the real request.
+        """
         try:
             msg = codec.decode(data)
         except ProtocolError as e:
@@ -57,7 +61,7 @@ class SimulatedAuthenticator:
         if not crypto.verify(verifier_key, crypto.LABEL_AUTH_REQUEST, msg.signed_part, msg["signature"]):
             return error(ErrorCode.BAD_SIGNATURE, request_id)
         if msg["device_id"] != self.device_id:
-            return error(ErrorCode.UNKNOWN_DEVICE, request_id)
+            return None
 
         self.prompts.append({k: msg[k] for k in ("action", "resource", "account")})
         if not approve:

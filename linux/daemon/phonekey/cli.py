@@ -10,18 +10,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import __version__, crypto
+from . import __version__, codec, crypto
+from .codec import MsgType
+from .paths import SYSTEM_SOCKET, default_socket_path, default_state_dir
 from .registry import DeviceRecord, Registry
 from .simulator import SimulatedAuthenticator
 from .verifier import Verifier
-
-
-def default_state_dir() -> Path:
-    """Development state location; the system daemon will use /var/lib/phonekey (Phase 3)."""
-    if "PHONEKEY_STATE_DIR" in os.environ:
-        return Path(os.environ["PHONEKEY_STATE_DIR"])
-    base = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
-    return Path(base) / "phonekey-dev"
 
 
 def bluetooth_state() -> str:
@@ -45,6 +39,48 @@ def bluetooth_state() -> str:
     return f"available ({name})" if props.get("Powered") else f"adapter off ({name})"
 
 
+class DaemonUnavailable(Exception):
+    pass
+
+
+def daemon_request(request: dict, timeout: float = 150.0, replies: list | None = None):
+    """Sends one request to phonekeyd and yields its JSON events until the final result.
+
+    Anything appended to `replies` while handling an event is sent back as a JSON line.
+    """
+    import json
+
+    candidates = [default_socket_path(), SYSTEM_SOCKET]
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    for path in candidates:
+        try:
+            sock.connect(str(path))
+            break
+        except OSError:
+            continue
+    else:
+        sock.close()
+        raise DaemonUnavailable("phonekeyd is not running (start it with linux/cli/phonekeyd)")
+    with sock, sock.makefile("rb") as stream:
+        sock.sendall(json.dumps(request).encode() + b"\n")
+        for line in stream:
+            event = json.loads(line)
+            yield event
+            if "result" in event:
+                return
+            while replies:
+                sock.sendall(json.dumps(replies.pop(0)).encode() + b"\n")
+    raise DaemonUnavailable("phonekeyd closed the connection")
+
+
+def daemon_status() -> dict | None:
+    try:
+        return next(e for e in daemon_request({"op": "status"}, timeout=5) if "result" in e)
+    except (DaemonUnavailable, OSError, StopIteration, ValueError):
+        return None
+
+
 def fingerprint(device_id: bytes) -> str:
     h = device_id[:8].hex()
     return " ".join(h[i:i + 4] for i in range(0, len(h), 4))
@@ -57,14 +93,18 @@ def describe(record: DeviceRecord) -> str:
 
 def cmd_status(args: argparse.Namespace) -> int:
     devices = Registry(args.state_dir).all()
+    daemon = daemon_status()
+    connected = {d["device_id"] for d in daemon["paired"] if d["connected"]} if daemon else set()
     print("PhoneKey")
     print("--------")
-    print("PhoneKey daemon: not installed (arrives in Phase 3)")
+    print(f"PhoneKey daemon: {'running (' + daemon['mode'] + ' mode)' if daemon else 'not running'}")
     print(f"Bluetooth: {bluetooth_state()}")
     print(f"Paired devices: {len(devices)}")
     for record in devices:
-        print(f"Device: {record.display_name} [{fingerprint(record.device_id)}]")
-    print("Authentication: " + ("ready" if devices else "not ready (no paired device)"))
+        state = "connected" if record.device_id.hex() in connected else "not connected"
+        print(f"Device: {record.display_name} [{fingerprint(record.device_id)}] — {state}")
+    ready = daemon is not None and bool(connected)
+    print("Authentication: " + ("ready" if ready else "not ready"))
     return 0
 
 
@@ -96,12 +136,60 @@ def cmd_unpair(args: argparse.Namespace) -> int:
 
 
 def cmd_test(args: argparse.Namespace) -> int:
-    if not args.simulate:
-        print("phonekey: talking to a real phone needs the BLE transport (Phase 3).\n"
-              "Run `phonekey test --simulate` to exercise the protocol with a software authenticator.",
-              file=sys.stderr)
+    if args.simulate:
+        return run_simulation()
+    try:
+        for event in daemon_request({"op": "auth", "action": "test", "account": getpass.getuser()}):
+            if event.get("event") == "sent":
+                print(f"Phone detected: {event['device']}")
+                print("Authentication request sent.")
+                print("Authenticate on Android...")
+            elif event["result"] == "ok":
+                print()
+                print("✓ Biometric authentication successful")
+                print("✓ Signature verified")
+                print("✓ PhoneKey authentication successful")
+                return 0
+            else:
+                print(f"✗ PhoneKey authentication failed: {event['result']} ({event.get('reason', '')})")
+                return 1
+    except DaemonUnavailable as e:
+        print(f"phonekey: {e}", file=sys.stderr)
         return 2
-    return run_simulation()
+    return 1
+
+
+def cmd_pair(args: argparse.Namespace) -> int:
+    replies: list = []
+    try:
+        for event in daemon_request({"op": "pair"}, replies=replies):
+            if event.get("event") == "waiting":
+                print(f"Pairing mode is open for {int(event['window'])} seconds.")
+                print("On your phone: open PhoneKey → Add computer.")
+                print("Waiting for the phone... (Ctrl-C to cancel)")
+            elif event.get("event") == "confirm":
+                code = event["passkey"]
+                print()
+                print(f"Bluetooth pairing code:  {code[:3]} {code[3:]}")
+                answer = input("Does your phone show exactly the same code? [y/N] ").strip().lower()
+                replies.append({"confirm": answer in ("y", "yes")})
+                print("Now confirm on the phone too, then approve the computer in PhoneKey." if answer in ("y", "yes")
+                      else "Rejected.")
+            elif event["result"] == "paired":
+                print()
+                print(f"✓ Paired {event['name']} [{fingerprint(bytes.fromhex(event['device_id']))}]")
+                print(f"  Key protection: {event['key_security']}   Attestation: {event['attestation']}")
+                return 0
+            else:
+                print(f"✗ Pairing failed: {event.get('reason', event['result'])}")
+                return 1
+    except DaemonUnavailable as e:
+        print(f"phonekey: {e}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\nPairing cancelled.")
+        return 130
+    return 1
 
 
 def run_simulation() -> int:
@@ -154,9 +242,7 @@ def run_simulation() -> int:
         checks.append(("modified request rejected", verifier.complete_auth(reply)))
 
         _, message = request()
-        stranger = SimulatedAuthenticator("Unknown phone")
-        stranger.handle_pair_request(verifier.begin_pairing(account=account))  # stranger knows the verifier...
-        checks.append(("unknown phone rejected", verifier.complete_auth(stranger.handle_auth_request(message))))
+        checks.append(("unknown phone rejected", verifier.complete_auth(forge_response(message, phone.device_id))))
 
         _, message = request()
         checks.append(("user denial rejected", verifier.complete_auth(phone.handle_auth_request(message, approve=False))))
@@ -169,6 +255,16 @@ def run_simulation() -> int:
             detail = outcome.error.name if outcome.error else "ACCEPTED"
             print(f"{'✓' if ok else '✗'} {name} ({detail})")
         return 0 if passed else 1
+
+
+def forge_response(request: bytes, device_id: bytes) -> bytes:
+    """A stranger's key answering a request while claiming to be the paired device."""
+    msg = codec.decode(request)
+    unsigned = codec.encode_unsigned(MsgType.AUTH_RESPONSE, {
+        "verifier_id": msg["verifier_id"], "device_id": device_id,
+        "request_id": msg["request_id"], "request_hash": crypto.sha256(request),
+    })
+    return codec.with_signature(unsigned, crypto.sign(crypto.generate_key(), crypto.LABEL_AUTH_ASSERTION, unsigned))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -186,6 +282,8 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("device", nargs="?", help="device id prefix (see `phonekey devices`)")
     target.add_argument("--all", action="store_true", help="revoke every paired device")
     unpair.set_defaults(func=cmd_unpair)
+
+    sub.add_parser("pair", help="pair a phone over Bluetooth (needs phonekeyd)").set_defaults(func=cmd_pair)
 
     test = sub.add_parser("test", help="run an end-to-end authentication test")
     test.add_argument("--simulate", action="store_true",

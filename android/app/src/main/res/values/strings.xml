@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PhoneKey</string>
-    <string name="phase_label">Phase 1 · local crypto test (no BLE)</string>
+    <string name="paired_computers">Paired computers</string>
+    <string name="add_computer">Add computer</string>
+    <string name="turn_on_bluetooth">Turn on Bluetooth</string>
+    <string name="allow_full_screen">Allow requests to appear on the lock screen</string>
+    <string name="pair_confirm">Pair (fingerprint)</string>
+    <string name="cancel">Cancel</string>
+    <string name="auth_title">Authentication request</string>
+    <string name="auth_approve">Approve with fingerprint</string>
+    <string name="auth_deny">Deny</string>
+    <string name="diagnostics">Diagnostics · local key test</string>
     <string name="generate_key">Generate test key</string>
     <string name="sign_challenge">Sign test challenge (biometric)</string>
     <string name="sign_unauthorized">Try signing without biometric</string>

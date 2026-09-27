@@ -169,6 +169,9 @@ class Verifier:
         self._pairing = _PairingSession(account, nonce, crypto.sha256(message), self._clock() + window)
         return message
 
+    def close_pairing(self) -> None:
+        self._pairing = None
+
     def complete_pairing(self, data: bytes, *, bond_address: str | None = None) -> DeviceRecord:
         """Checks a PAIR_RESPONSE and registers the device. Raises ProtocolError.
 
