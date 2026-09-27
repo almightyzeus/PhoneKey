@@ -149,7 +149,9 @@ class DeviceKeyStore(private val context: Context) {
             // Timeout 0: every single signature needs its own biometric (T-3, T-5).
             .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
             .setInvalidatedByBiometricEnrollment(true)
-            .setUnlockedDeviceRequired(true) // SECURITY.md D-4
+            // Deliberately NOT setUnlockedDeviceRequired (SECURITY.md D-4): on this class of
+            // device it left keys sealed after a face unlock, and the per-use fingerprint
+            // above is the actual authorization.
             .setIsStrongBoxBacked(strongBox)
             .apply { if (attestationChallenge != null) setAttestationChallenge(attestationChallenge) }
             .build()

@@ -10,6 +10,7 @@
     <string name="auth_title">Authentication request</string>
     <string name="auth_approve">Approve with fingerprint</string>
     <string name="auth_deny">Deny</string>
+    <string name="auth_unlock">Unlock to review</string>
     <string name="diagnostics">Diagnostics · local key test</string>
     <string name="generate_key">Generate test key</string>
     <string name="sign_challenge">Sign test challenge (biometric)</string>

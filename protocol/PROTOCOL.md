@@ -317,7 +317,7 @@ Both sides SHOULD show a short fingerprint of the other side's key (the first
 | Location | `AndroidKeyStore`. StrongBox is tried first (`setIsStrongBoxBacked(true)`); on `StrongBoxUnavailableException` the key is generated TEE-backed. StrongBox is never assumed. |
 | Auth | `setUserAuthenticationRequired(true)` + `setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG)`: **every** signature needs a fresh Class 3 biometric through `BiometricPrompt` + `CryptoObject`. |
 | Enrollment change | `setInvalidatedByBiometricEnrollment(true)`: adding a fingerprint permanently invalidates the key, and the phone must be re-paired. |
-| Device lock | `setUnlockedDeviceRequired(true)` (see SECURITY.md, decision D‑4) |
+| Device lock | **Not** `setUnlockedDeviceRequired` (SECURITY.md D‑4): the per-use fingerprint is the authorization |
 | Attestation | `setAttestationChallenge(request_hash)` |
 | One key per verifier | Yes: alias `phonekey.v1.<hex(verifier_id)[0:16]>` |
 

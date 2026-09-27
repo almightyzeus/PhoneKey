@@ -90,8 +90,10 @@ needs a real finger. It is tested manually in the app: **Generate test key** →
 - **Enrollment changes invalidate the key** (`KeyPermanentlyInvalidatedException`).
   Adding a new fingerprint means generating a new key (in later phases:
   re-pairing).
-- **`setUnlockedDeviceRequired(true)`**: the key is unusable while the phone is
-  locked (D‑4, to be evaluated on the device).
+- **No `setUnlockedDeviceRequired`** (D‑4, turned off after device testing).
+  With it, keys stayed sealed after a face unlock (Keystore: "super decryption
+  key is not in memory"), so PhoneKey failed on an unlocked phone. The
+  per-signature fingerprint remains the authorization.
 - **ECDSA signatures are malleable**: anyone can turn a valid `(r, s)` into
   another valid `(r, n−s)`. PhoneKey never uses signature bytes as identifiers.
   Replay protection comes from single-use challenges.

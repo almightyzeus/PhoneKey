@@ -25,6 +25,7 @@ EventSink = Callable[[Event], None]
 class Transport(Protocol):
     def send(self, peer_id: str, frame: bytes) -> None: ...
     def set_pairing_mode(self, enabled: bool) -> None: ...
+    def drop(self, peer_id: str) -> None: ...
 
 
 class Scheduler(Protocol):
@@ -32,11 +33,18 @@ class Scheduler(Protocol):
     def cancel(self, handle: object) -> None: ...
 
 
+HELLO_TIMEOUT = 6.0  # seconds for a phone to answer our subscription or keepalive with STATUS
+KEEPALIVE_INTERVAL = 20.0  # detects links that stay up while the phone app restarted
+
+
 @dataclass
 class _Peer:
     reassembler: framing.Reassembler = field(default_factory=framing.Reassembler)
     device_id: bytes | None = None
     att_mtu: int = framing.DEFAULT_ATT_MTU
+    greeted: bool = False  # the phone answered our subscription with STATUS
+    hello_timer: object = None
+    ping_timer: object = None
 
 
 @dataclass
@@ -86,8 +94,40 @@ class DaemonCore:
     def on_connect(self, peer_id: str, att_mtu: int | None = None) -> None:
         """The transport connected and subscribed to a phone."""
         peer = self._peers.setdefault(peer_id, _Peer())
+        peer.greeted = False
         if att_mtu:
             peer.att_mtu = att_mtu
+        self._cancel_hello(peer)
+        peer.hello_timer = self._scheduler.call_later(HELLO_TIMEOUT, lambda: self._check_greeted(peer_id, peer))
+
+    def _cancel_hello(self, peer: _Peer) -> None:
+        if peer.hello_timer is not None:
+            self._scheduler.cancel(peer.hello_timer)
+            peer.hello_timer = None
+
+    def _schedule_ping(self, peer_id: str, peer: _Peer) -> None:
+        if peer.ping_timer is not None:
+            self._scheduler.cancel(peer.ping_timer)
+        peer.ping_timer = self._scheduler.call_later(KEEPALIVE_INTERVAL, lambda: self._ping(peer_id, peer))
+
+    def _ping(self, peer_id: str, peer: _Peer) -> None:
+        peer.ping_timer = None
+        if self._peers.get(peer_id) is not peer:
+            return
+        peer.greeted = False
+        peer.hello_timer = self._scheduler.call_later(HELLO_TIMEOUT, lambda: self._check_greeted(peer_id, peer))
+        self._send(codec.encode(MsgType.STATUS, {"status": Status.READY, "verifier_id": self.verifier.verifier_id}),
+                   peer_id)
+
+    def _check_greeted(self, peer_id: str, peer: _Peer) -> None:
+        peer.hello_timer = None
+        if self._peers.get(peer_id) is peer and not peer.greeted:
+            log.info("no STATUS from %s after subscribing; reconnecting", peer_id)
+            self._drop(peer_id)
+
+    def _drop(self, peer_id: str) -> None:
+        self.on_disconnect(peer_id)
+        self._transport.drop(peer_id)
 
     def on_frame(self, peer_id: str, frame: bytes, att_mtu: int | None = None) -> None:
         peer = self._peers.setdefault(peer_id, _Peer())
@@ -104,6 +144,11 @@ class DaemonCore:
 
     def on_disconnect(self, peer_id: str) -> None:
         peer = self._peers.pop(peer_id, None)
+        if peer is not None:
+            self._cancel_hello(peer)
+            if peer.ping_timer is not None:
+                self._scheduler.cancel(peer.ping_timer)
+                peer.ping_timer = None
         if peer is None or peer.device_id is None:
             return
         if peer.device_id in self.connected_device_ids():
@@ -183,13 +228,17 @@ class DaemonCore:
             self._send(codec.encode(MsgType.ERROR, {"error_code": ErrorCode.MALFORMED}), peer_id)
 
     def _on_status(self, peer_id: str, peer: _Peer, msg: codec.Message) -> None:
+        peer.greeted = True
+        self._cancel_hello(peer)
         device_id = msg.get("device_id")
-        log.info("STATUS %s from %s (%s)", msg["status"], peer_id,
-                 f"device {device_id[:4].hex()}" if device_id else "no ids")
+        log.debug("STATUS %s from %s (%s)", msg["status"], peer_id,
+                  f"device {device_id[:4].hex()}" if device_id else "no ids")
         if msg.get("verifier_id") == self.verifier.verifier_id and device_id is not None:
             if self.verifier.registry.get(device_id) is not None:
+                if peer.device_id != device_id:
+                    log.info("paired device %s connected via %s", device_id[:4].hex(), peer_id)
                 peer.device_id = device_id
-                log.info("paired device %s connected via %s", device_id[:4].hex(), peer_id)
+                self._schedule_ping(peer_id, peer)
             return
         if self._pairing is not None:
             log.info("sending PAIR_REQUEST to %s", peer_id)
@@ -227,8 +276,13 @@ class DaemonCore:
     def _auth_timeout(self, request_id: bytes) -> None:
         self.verifier.cancel(request_id)
         if request_id in self._waiters:
-            self._waiters[request_id].timer = None
+            waiter = self._waiters[request_id]
+            waiter.timer = None
             self._finish_auth(request_id, {"result": "unavailable", "reason": "timed out"})
+            # A silent phone may be behind a stale link: reconnect for the next attempt.
+            peer_id = next((pid for pid, p in self._peers.items() if p.device_id == waiter.device_id), None)
+            if peer_id is not None:
+                self._drop(peer_id)
 
     def _finish_auth(self, request_id: bytes, event: Event) -> None:
         waiter = self._waiters.pop(request_id)

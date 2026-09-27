@@ -245,6 +245,9 @@ class _Transport:
     def set_pairing_mode(self, enabled):
         self.central.set_pairing_mode(enabled)
 
+    def drop(self, peer_id):
+        self.central.drop(peer_id)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="phonekeyd", description="PhoneKey BLE verifier daemon (pre-alpha).")

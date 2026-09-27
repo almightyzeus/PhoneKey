@@ -4,7 +4,7 @@ import unittest
 
 from phonekey import codec, framing
 from phonekey.codec import ErrorCode, MsgType, Status
-from phonekey.core import DaemonCore
+from phonekey.core import KEEPALIVE_INTERVAL, DaemonCore
 from phonekey.simulator import SimulatedAuthenticator
 from tests.helpers import ACCOUNT, VerifierTestCase
 
@@ -37,6 +37,7 @@ class FakePhone:
         self.connected = True
         self.approve = True
         self.auto_reply = True
+        self.keepalive = True
         self.received: list[codec.Message] = []
         self.held: list[bytes] = []  # replies withheld when auto_reply is off
         self._msg_no = 0
@@ -55,6 +56,9 @@ class FakePhone:
         msg = codec.decode(data)
         self.received.append(msg)
         reply = None
+        if msg.type is MsgType.STATUS and msg["status"] == Status.READY and self.keepalive:
+            self.hello(msg["verifier_id"])
+            return
         if msg.type is MsgType.PAIR_REQUEST and self.auth._verifiers.get(msg["verifier_id"]) is None:
             reply = self.auth.handle_pair_request(data)
         elif msg.type is MsgType.AUTH_REQUEST:
@@ -78,6 +82,7 @@ class FakeTransport:
         self.phones: list[FakePhone] = []
         self.pairing_mode = False
         self.frames = 0
+        self.dropped = []
 
     def send(self, peer_id, frame):
         self.frames += 1
@@ -87,6 +92,9 @@ class FakeTransport:
 
     def set_pairing_mode(self, enabled):
         self.pairing_mode = enabled
+
+    def drop(self, peer_id):
+        self.dropped.append(peer_id)
 
 
 class CoreTestCase(VerifierTestCase):
@@ -120,7 +128,8 @@ class AuthOverLinkTest(CoreTestCase):
         self.connect(self.phone, mtu=23)  # forces many fragments each way
         self.assertEqual({"result": "ok"}, self.authenticate())
         self.assertEqual({"event": "sent", "device": "Simulated phone"}, self.events[0])
-        self.assertEqual({}, self.scheduler.timers)
+        # Only the keepalive timer remains; the auth timeout was cancelled.
+        self.assertEqual([KEEPALIVE_INTERVAL], [t for t, _ in self.scheduler.timers.values()])
         self.assertEqual(0, self.verifier.pending_count)
 
     def test_phone_not_connected(self):
@@ -150,6 +159,7 @@ class AuthOverLinkTest(CoreTestCase):
         self.assertEqual("sent", self.authenticate()["event"])
         self.scheduler.fire_all()
         self.assertEqual({"result": "unavailable", "reason": "timed out"}, self.events[-1])
+        self.assertEqual([phone.peer_id], self.transport.dropped)  # reconnect for next time
         phone.send(phone.held[0])  # a late answer changes nothing
         self.assertEqual(2, len(self.events))
 
@@ -279,6 +289,29 @@ class PairingOverLinkTest(CoreTestCase):
         self.core.on_bond_confirmation("/dev_X", 1, answers.append)
         self.core.cancel_pairing()
         self.assertEqual([False], answers)
+
+    def test_silent_phone_after_subscribing_is_dropped(self):
+        phone = self.connect(self.phone, hello=False)
+        self.scheduler.fire_all()
+        self.assertEqual([phone.peer_id], self.transport.dropped)
+
+    def test_greeting_phone_is_kept(self):
+        self.connect(self.phone)
+        self.scheduler.fire_all()
+        self.assertEqual([], self.transport.dropped)
+
+    def test_keepalive_is_answered(self):
+        self.connect(self.phone)
+        self.scheduler.fire_all()  # ping
+        self.scheduler.fire_all()  # its answer window, then the next ping
+        self.assertEqual([], self.transport.dropped)
+
+    def test_phone_that_stops_answering_keepalive_is_dropped(self):
+        phone = self.connect(self.phone)
+        phone.keepalive = False  # e.g. the app restarted while the link stayed up
+        self.scheduler.fire_all()  # ping
+        self.scheduler.fire_all()  # no answer
+        self.assertEqual([phone.peer_id], self.transport.dropped)
 
     def test_status_reports_devices(self):
         self.connect(self.phone)

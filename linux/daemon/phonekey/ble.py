@@ -38,6 +38,7 @@ AGENT = "org.bluez.Agent1"
 AGENT_PATH = "/dev/phonekey/agent"
 
 RETRY_COOLDOWN = 10.0  # seconds before retrying a device whose connection failed
+DISCOVERY_WATCHDOG = 5  # seconds between checks that our LE scan is still running
 
 Confirm = Callable[[str, int, Callable[[bool], None]], None]
 
@@ -139,20 +140,36 @@ class BleCentral:
         self._bus.add_signal_receiver(self._characteristic_changed, dbus_interface=PROPERTIES,
                                       signal_name="PropertiesChanged", arg0=GATT_CHRC, path_keyword="path")
         try:
-            self._adapter.SetDiscoveryFilter({
-                "Transport": "le",
-                "UUIDs": dbus.Array([SERVICE_UUID, PAIRING_ADV_UUID], signature="s"),
-                "DuplicateData": dbus.Boolean(True),
-            })
-            self._adapter.StartDiscovery()
+            self._start_discovery()
         except dbus.exceptions.DBusException as e:
             on_error(f"cannot start LE discovery: {e.get_dbus_message()}")
             return
         log.info("scanning for PhoneKey phones")
+        from gi.repository import GLib
+        GLib.timeout_add_seconds(DISCOVERY_WATCHDOG, self._discovery_watchdog)
         for path, ifaces in self._managed_objects().items():
             if DEVICE in ifaces:
                 self._consider(str(path), ifaces[DEVICE])
         on_ready()
+
+    def _start_discovery(self) -> None:
+        self._adapter.SetDiscoveryFilter({
+            "Transport": "le",
+            "UUIDs": dbus.Array([SERVICE_UUID, PAIRING_ADV_UUID], signature="s"),
+            "DuplicateData": dbus.Boolean(True),
+        })
+        self._adapter.StartDiscovery()
+
+    def _discovery_watchdog(self) -> bool:
+        """BlueZ ends our scan when Bluetooth is toggled or devices are removed; restart it."""
+        props = dbus.Interface(self._bus.get_object(BLUEZ, self._adapter_path), PROPERTIES)
+        try:
+            if props.Get(ADAPTER, "Powered") and not props.Get(ADAPTER, "Discovering"):
+                self._start_discovery()
+                log.info("scanning restarted")
+        except dbus.exceptions.DBusException as e:
+            log.debug("discovery watchdog: %s", e.get_dbus_message())
+        return True  # keep the timer
 
     def stop(self) -> None:
         if self._agent_registered:
@@ -182,6 +199,15 @@ class BleCentral:
             for path, ifaces in self._managed_objects().items():
                 if DEVICE in ifaces:
                     self._consider(str(path), ifaces[DEVICE])
+
+    def drop(self, peer_id: str) -> None:
+        """Fully disconnects a phone so it reconnects from scratch."""
+        self._links.pop(peer_id, None)  # the core already knows; don't report it again
+        self._cooldown[peer_id] = time.monotonic() + 1.0
+        try:
+            self._device(peer_id).Disconnect(reply_handler=lambda: None, error_handler=lambda e: None)
+        except dbus.exceptions.DBusException:
+            pass
 
     def send(self, peer_id: str, frame: bytes) -> None:
         link = self._links.get(peer_id)
@@ -308,7 +334,7 @@ class BleCentral:
         # BlueZ sometimes picks classic Bluetooth for a dual-mode phone; the next LE
         # advertisement makes it choose LE, so retry soon.
         quick = "br-connection" in reason
-        self._cooldown[path] = time.monotonic() + (1.0 if quick else RETRY_COOLDOWN)
+        self._cooldown[path] = time.monotonic() + (0.5 if quick else RETRY_COOLDOWN)
         self._disconnect(path)
 
     def _disconnect(self, path: str) -> None:
@@ -322,11 +348,20 @@ class BleCentral:
     # ---- data ------------------------------------------------------------
 
     def _characteristic_changed(self, interface, changed, invalidated, path=None):
-        if "Value" not in changed:
-            return
         path = str(path)
         device_path = path.rsplit("/", 2)[0]  # .../dev_XX/serviceNN/charNNNN
         link = self._links.get(device_path)
+        if "Notifying" in changed and not changed["Notifying"]:
+            # The phone's GATT server restarted (e.g. the app was killed) while the link stayed up.
+            if link is not None and link.ready and path == link.notify_path:
+                log.info("subscription to %s lost; resubscribing", device_path)
+                link.ready = False
+                dbus.Interface(self._bus.get_object(BLUEZ, path), GATT_CHRC).StartNotify(
+                    reply_handler=lambda: self._ready(device_path),
+                    error_handler=lambda e: self._fail(device_path, f"resubscribe failed: {e}"))
+            return
+        if "Value" not in changed:
+            return
         if link is not None and link.ready and path == link.notify_path:
             self._on_frame(device_path, bytes(changed["Value"]), link.mtu)
 

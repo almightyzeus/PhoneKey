@@ -160,6 +160,9 @@ class PhoneKeyService : Service() {
         a2v = indicate
         server = manager.openGattServer(this, gattCallback)?.also { it.addService(service) }
         if (server == null) Log.e(TAG, "could not open GATT server")
+        // Links that outlived a previous instance of this service (the Bluetooth link is
+        // shared with other apps) must be adopted, or their requests never reach us.
+        manager.getConnectedDevices(BluetoothProfile.GATT_SERVER).forEach { server?.connect(it, false) }
         updateAdvertising()
     }
 
@@ -286,11 +289,17 @@ class PhoneKeyService : Service() {
             send(link, AuthenticatorCore.error(e.error))
             return
         }
-        Log.i(TAG, "received ${msg.type} from $address")
+        if (msg.type != MsgType.STATUS) Log.i(TAG, "received ${msg.type} from $address")
         when (msg.type) {
             MsgType.PAIR_REQUEST -> onPairRequest(link, message)
             MsgType.AUTH_REQUEST -> onAuthRequest(link, message)
-            MsgType.STATUS -> if (msg.long("status") == StatusCode.PAIRED) onPaired(link, msg)
+            MsgType.STATUS -> when (msg.long("status")) {
+                StatusCode.PAIRED -> onPaired(link, msg)
+                // Laptop keepalive: answer with our ids so it knows this link is alive.
+                StatusCode.READY -> store.byAddress(address)?.takeIf {
+                    msg.has("verifier_id") && msg.bytes("verifier_id").contentEquals(it.verifierId)
+                }?.let { send(link, AuthenticatorCore.status(StatusCode.READY, it)) }
+            }
             MsgType.ERROR -> if (pendingPairing?.address == address) {
                 val code = ErrorCode.of(msg.long("error_code").toInt())
                 finishPairing(false, "The computer refused pairing (${code?.name ?: "error"})")
@@ -328,7 +337,9 @@ class PhoneKeyService : Service() {
     }
 
     private fun send(link: Link, message: ByteArray) {
-        Log.i(TAG, "sending ${MsgType.of(message[3].toInt())} to ${link.device.address} (${message.size} bytes)")
+        if (message[3].toInt() != MsgType.STATUS.code) {
+            Log.i(TAG, "sending ${MsgType.of(message[3].toInt())} to ${link.device.address} (${message.size} bytes)")
+        }
         msgNo = (msgNo + 1) and 0xFF
         link.queue.addAll(Framing.fragment(message, msgNo, Framing.maxPayload(link.mtu)))
         pump(link)
