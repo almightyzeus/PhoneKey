@@ -40,7 +40,7 @@ class CodecVectorTest {
     @Test
     fun validVectorsDecodeAndReencodeExactly() {
         val valid = vectors.getJSONArray("valid")
-        assertEquals(6, valid.length())
+        assertEquals(7, valid.length())
         for (i in 0 until valid.length()) {
             val v = valid.getJSONObject(i)
             val name = v.getString("name")

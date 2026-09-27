@@ -63,7 +63,7 @@ class SimulatedAuthenticator:
         if msg["device_id"] != self.device_id:
             return None
 
-        self.prompts.append({k: msg[k] for k in ("action", "resource", "account")})
+        self.prompts.append({k: msg[k] for k in ("action", "resource", "account", "detail") if k in msg.fields})
         if not approve:
             return error(ErrorCode.USER_DENIED, request_id)
 

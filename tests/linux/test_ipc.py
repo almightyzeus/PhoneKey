@@ -27,6 +27,12 @@ class AuthorizeTest(unittest.TestCase):
                     self.assertIsNotNone(check("auth", ME, "root", system_mode=system_mode))
                     self.assertIsNotNone(check("auth", ME, None, system_mode=system_mode))
 
+    def test_sudo_action_only_from_root(self):
+        if ME != 0:
+            self.assertIsNotNone(authorize("auth", ME, MY_NAME, daemon_uid=ME, system_mode=True, action="sudo"))
+            self.assertIsNone(authorize("auth", ME, MY_NAME, daemon_uid=ME, system_mode=True, action="test"))
+        self.assertIsNone(authorize("auth", 0, "someone", daemon_uid=ME, system_mode=True, action="sudo"))
+
     def test_root_may_authenticate_any_account(self):
         self.assertIsNone(check("auth", 0, "someone", system_mode=True))
 

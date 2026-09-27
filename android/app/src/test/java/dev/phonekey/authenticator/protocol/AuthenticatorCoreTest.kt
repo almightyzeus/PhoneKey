@@ -36,12 +36,15 @@ class AuthenticatorCoreTest {
         verifier: ByteArray = verifierId,
         device: ByteArray = deviceId,
         account: String = "alice",
+        detail: String? = null,
     ): ByteArray {
-        val unsigned = Codec.encodeUnsigned(MsgType.AUTH_REQUEST, mapOf(
+        val fields = mutableMapOf<String, Any>(
             "verifier_id" to verifier, "device_id" to device, "request_id" to ByteArray(16) { 7 },
             "challenge" to ByteArray(32) { 1 }, "action" to "linux.sudo", "resource" to "laptop",
             "account" to account, "issued_at" to 0L, "ttl_ms" to 30_000L,
-        ))
+        )
+        if (detail != null) fields["detail"] = detail
+        val unsigned = Codec.encodeUnsigned(MsgType.AUTH_REQUEST, fields)
         return Codec.withSignature(unsigned, sign(signer, Labels.AUTH_REQUEST, unsigned))
     }
 
@@ -67,6 +70,21 @@ class AuthenticatorCoreTest {
         assertArrayEquals(AuthenticatorCore.sha256(request), msg.bytes("request_hash"))
         assertTrue(SignatureVerifier.verify(SignatureVerifier.publicKeyFromSpki(deviceKey.public.encoded),
             Labels.AUTH_ASSERTION + msg.signedPart!!, msg.bytes("signature")))
+    }
+
+    @Test
+    fun commandDetailIsShownOnlyWhenSigned() {
+        val request = authRequest(detail = "sudo apt upgrade")
+        assertEquals("sudo apt upgrade", (evaluate(request) as AuthDecision.Prompt).detail)
+        assertEquals(null, (evaluate(authRequest()) as AuthDecision.Prompt).detail)
+
+        // An attacker on the link changes or removes the command: the verifier's signature breaks.
+        val msg = Codec.decode(request)
+        val base = msg.fields.filterKeys { it != "signature" }
+        for (fields in listOf(base + ("detail" to "sudo true"), base - "detail")) {
+            val tampered = Codec.withSignature(Codec.encodeUnsigned(MsgType.AUTH_REQUEST, fields), msg.bytes("signature"))
+            assertEquals(ErrorCode.BAD_SIGNATURE, errorOf(evaluate(tampered)))
+        }
     }
 
     @Test

@@ -20,7 +20,7 @@ import struct
 import sys
 from pathlib import Path
 
-from . import crypto
+from . import command, crypto
 from .core import DaemonCore, Event
 from .paths import default_socket_path, default_state_dir
 from .registry import Registry
@@ -35,13 +35,15 @@ PAIRING_WINDOW = 120.0
 ACTIONS = {"test": "phonekey.test", "sudo": "linux.sudo", "unlock": "linux.unlock", "login": "linux.login"}
 
 
-def peer_uid(sock: socket.socket) -> int:
-    _pid, uid, _gid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                                          struct.calcsize("3i")))
-    return uid
+def peer_cred(sock: socket.socket) -> tuple[int, int]:
+    """(pid, uid) of the process that connected."""
+    pid, uid, _gid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                         struct.calcsize("3i")))
+    return pid, uid
 
 
-def authorize(op: str, uid: int, account: str | None, *, daemon_uid: int, system_mode: bool) -> str | None:
+def authorize(op: str, uid: int, account: str | None, *, daemon_uid: int, system_mode: bool,
+              action: str | None = None) -> str | None:
     """Returns None if allowed, else the reason. See SECURITY.md §4."""
     if op == "status":
         return None
@@ -54,6 +56,8 @@ def authorize(op: str, uid: int, account: str | None, *, daemon_uid: int, system
     if op == "auth":
         if uid == 0:
             return None
+        if action == "sudo":
+            return "sudo approvals may only come from sudo (root)"
         try:
             name = pwd.getpwuid(uid).pw_name
         except KeyError:
@@ -87,7 +91,7 @@ class Client:
         from gi.repository import GLib
 
         self.server, self.sock = server, sock
-        self.uid = peer_uid(sock)
+        self.pid, self.uid = peer_cred(sock)
         self.buffer = b""
         self.closed = False
         self.on_close = None
@@ -202,7 +206,8 @@ class IpcServer:
             client.send({"result": "error", "reason": "bad request"}, final=True)
             return
         account = request.get("account")
-        reason = authorize(op, client.uid, account, daemon_uid=self.daemon_uid, system_mode=self.system_mode)
+        reason = authorize(op, client.uid, account, daemon_uid=self.daemon_uid, system_mode=self.system_mode,
+                           action=request.get("action"))
         if reason is not None:
             log.warning("refused %s from uid %d: %s", op, client.uid, reason)
             client.send({"result": "error", "reason": reason}, final=True)
@@ -230,8 +235,10 @@ class IpcServer:
             if action is None:
                 client.send({"result": "error", "reason": "unknown action"}, final=True)
                 return
-            log.info("auth request: account=%s action=%s", account, action)
-            self.core.authenticate(account, action, self.hostname, lambda e: self._forward(client, e))
+            # The phone shows the sudo command; read by us from the caller's process, never sent by it.
+            detail = command.sudo_command(client.pid) if action == "linux.sudo" and client.uid == 0 else None
+            log.info("auth request: account=%s action=%s%s", account, action, " (with command)" if detail else "")
+            self.core.authenticate(account, action, self.hostname, lambda e: self._forward(client, e), detail)
 
     def _pairing_answer(self, line: bytes) -> None:
         try:

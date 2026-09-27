@@ -188,7 +188,8 @@ class DaemonCore:
         if self._pairing is not None:
             self._end_pairing({"result": "cancelled"})
 
-    def authenticate(self, account: str, action: str, resource: str, on_event: EventSink) -> None:
+    def authenticate(self, account: str, action: str, resource: str, on_event: EventSink,
+                     detail: str | None = None) -> None:
         connected = self.connected_device_ids()
         candidates = [r for r in self.verifier.registry.for_account(account) if r.device_id in connected]
         if not candidates:
@@ -197,7 +198,7 @@ class DaemonCore:
         device = candidates[0]
         try:
             request_id, message = self.verifier.begin_auth(device.device_id, account=account, action=action,
-                                                           resource=resource)
+                                                           resource=resource, detail=detail)
         except ProtocolError as e:
             on_event({"result": "unavailable", "reason": e.code.name})
             return

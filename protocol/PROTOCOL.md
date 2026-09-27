@@ -139,9 +139,12 @@ if any rule is broken:
 | 0x10 | `status` | u8 (see §4.5) | 1 |
 | 0x11 | `error_code` | u16 (see §7) | 2 |
 | 0x12 | `error_detail` | string (diagnostic only, never trusted or displayed as fact) | 0–128 |
+| 0x13 | `detail` | string (what exactly is approved, e.g. a command line) | 1–256 |
 | 0x7F | `signature` | bytes (DER ECDSA) | 8–72 |
 
-Tags 0x13–0x7E are reserved for future versions.
+Tags 0x14–0x7E are reserved for future versions. (`detail`, 0x13, was added in
+the pre-alpha without a version bump: an older app rejects it as an unknown
+tag, and the laptop then falls back to the password.)
 
 Test vectors for the codec and for every signed message type will live in
 [`test-vectors/`](test-vectors/). The Kotlin and Python implementations MUST
@@ -201,6 +204,7 @@ both pass them.
 | 0x07 | `account` | R | Account being authorized, e.g. `chinuzeus`. |
 | 0x08 | `issued_at` | R | Informational for the authenticator (clocks are not trusted to agree). |
 | 0x09 | `ttl_ms` | R | Validity from receipt; the authenticator stops prompting after it. |
+| 0x13 | `detail` | O | What exactly is approved, e.g. `sudo apt upgrade`. Written by the verifier itself (for sudo: from the requesting process), never taken from a client. Display-safe: no control or bidi characters; truncation is marked in the text (`… [+N more characters]`). |
 | 0x7F | `signature` | R | Verifier key, label `auth-request`. |
 
 ### 4.4 `AUTH_RESPONSE` (0x04)
@@ -481,9 +485,11 @@ Every error is fail-closed: the requested action is **not** authorized.
 5. If a prompt is already showing, send `BUSY`. Apply a rate limit (default:
    at most 5 requests per verifier per minute).
 6. Check that `account` equals the account stored at pairing, then show a
-   notification or activity with the verifier name, `action`, `resource`, and
-   `account`. Launch `BiometricPrompt` with a `CryptoObject`
-   that wraps a `Signature` initialized with the device key.
+   notification or activity with the verifier name, `action`, `resource`,
+   `account` and, when present, `detail`. Launch `BiometricPrompt` with a
+   `CryptoObject` that wraps a `Signature` initialized with the device key.
+   `detail` also goes into the prompt itself, because over the lock screen
+   the prompt is all the user sees.
 7. On biometric success, sign `AUTH_RESPONSE` and send it. On failure or
    cancel, send `BIOMETRIC_FAILED` / `USER_DENIED`. On
    `KeyPermanentlyInvalidatedException`, send `KEY_INVALIDATED`.

@@ -72,6 +72,8 @@ def main() -> None:
                                               resource="test-host")
         auth_response = phone.handle_auth_request(auth_request)
         assert verifier.complete_auth(auth_response).ok
+        _, auth_request_detail = verifier.begin_auth(phone.device_id, account="alice", action="linux.sudo",
+                                                     resource="test-host", detail="sudo apt upgrade 'a b' é")
 
     status = codec.encode(MsgType.STATUS, {"status": codec.Status.READY})
     err = error(codec.ErrorCode.USER_DENIED, bytes(16))
@@ -81,6 +83,7 @@ def main() -> None:
         valid_vector("pair_response", pair_response, phone.spki),
         valid_vector("auth_request", auth_request, verifier.spki),
         valid_vector("auth_response", auth_response, phone.spki),
+        valid_vector("auth_request_with_detail", auth_request_detail, verifier.spki),
         valid_vector("status", status, None),
         valid_vector("error", err, None),
     ]
@@ -112,7 +115,8 @@ def main() -> None:
         ("missing required field", header, "MALFORMED"),
         ("tags out of order", header + tlv(0x10, b"\x01") + tlv(0x03, bytes(16)), "MALFORMED"),
         ("repeated tag", header + ready + ready, "MALFORMED"),
-        ("unknown tag", header + ready + tlv(0x13, b""), "MALFORMED"),
+        ("unknown tag", header + ready + tlv(0x14, b"x"), "MALFORMED"),
+        ("detail not allowed for type", header + ready + tlv(0x13, b"x"), "MALFORMED"),
         ("tag not allowed for type", header + tlv(0x04, bytes(32)) + ready, "MALFORMED"),
         ("wrong fixed length", header + tlv(0x03, bytes(15)) + ready, "MALFORMED"),
         ("wrong integer width", header + tlv(0x10, b"\x00\x01"), "MALFORMED"),

@@ -104,6 +104,7 @@ FIELDS = (
     FieldSpec(0x10, "status", Kind.U8),
     FieldSpec(0x11, "error_code", Kind.U16),
     FieldSpec(0x12, "error_detail", Kind.STRING, 0, 128),
+    FieldSpec(0x13, "detail", Kind.STRING, 1, 256),
     FieldSpec(SIGNATURE_TAG, "signature", Kind.BYTES, 8, 72),
 )
 FIELDS_BY_TAG = {f.tag: f for f in FIELDS}
@@ -124,7 +125,8 @@ SCHEMAS = {
         "attestation_chain",
     ),
     MsgType.AUTH_REQUEST: _schema(
-        "verifier_id device_id request_id challenge action resource account issued_at ttl_ms signature"
+        "verifier_id device_id request_id challenge action resource account issued_at ttl_ms signature",
+        "detail",
     ),
     MsgType.AUTH_RESPONSE: _schema("verifier_id device_id request_id request_hash signature"),
     MsgType.STATUS: _schema("status", "verifier_id device_id request_id"),
@@ -138,6 +140,8 @@ _FORBIDDEN_CHARS = frozenset(
     [*range(0x00, 0x20), *range(0x7F, 0xA0), 0x061C, 0x200E, 0x200F,
      *range(0x202A, 0x202F), *range(0x2066, 0x206A)]
 )
+
+FORBIDDEN_CHARS = _FORBIDDEN_CHARS
 
 FieldValue = bytes | str | int
 

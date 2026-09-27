@@ -31,6 +31,32 @@ class AuthenticationTest(VerifierTestCase):
         self.assertEqual({"action": "linux.sudo", "resource": "test-host", "account": ACCOUNT},
                          self.phone.prompts[-1])
 
+    def test_request_shows_command_detail(self):
+        _, request = self.request(action="linux.sudo", detail="sudo apt upgrade")
+        self.assertTrue(self.verifier.complete_auth(self.phone.handle_auth_request(request)).ok)
+        self.assertEqual("sudo apt upgrade", self.phone.prompts[-1]["detail"])
+
+    def test_detail_is_optional(self):
+        _, request = self.request(action="linux.sudo")
+        self.assertNotIn("detail", codec.decode(request).fields)
+
+    # T-2: an attacker on the link cannot change or remove the command shown
+    def test_modified_or_stripped_detail_refused_by_phone(self):
+        _, request = self.request(action="linux.sudo", detail="sudo apt upgrade")
+        msg = codec.decode(request)
+        for fields in ({**msg.fields, "detail": "sudo true"},
+                       {k: v for k, v in msg.fields.items() if k != "detail"}):
+            with self.subTest(detail=fields.get("detail")):
+                reply = self.phone.handle_auth_request(codec.encode(MsgType.AUTH_REQUEST, fields))
+                self.assertEqual(ErrorCode.BAD_SIGNATURE, codec.decode(reply)["error_code"])
+
+    def test_phone_signing_other_detail_rejected(self):
+        _, request = self.request(action="linux.sudo", detail="sudo apt upgrade")
+        msg = codec.decode(request)
+        shown = codec.encode(MsgType.AUTH_REQUEST, {**msg.fields, "detail": "sudo true"})
+        response = self._sign_response_for(shown, msg["request_id"])
+        self.assertEqual(ErrorCode.BAD_SIGNATURE, self.verifier.complete_auth(response).error)
+
     def test_challenges_are_fresh(self):
         seen = set()
         for _ in range(50):

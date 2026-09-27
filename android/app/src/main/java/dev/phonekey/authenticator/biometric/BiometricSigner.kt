@@ -26,6 +26,7 @@ class BiometricSigner(private val activity: FragmentActivity) {
         message: ByteArray,
         title: String,
         subtitle: String,
+        description: String? = null,
         onResult: (Result<ByteArray>) -> Unit,
     ) {
         val callback = object : BiometricPrompt.AuthenticationCallback() {
@@ -51,6 +52,7 @@ class BiometricSigner(private val activity: FragmentActivity) {
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle(title)
             .setSubtitle(subtitle)
+            .apply { if (description != null) setDescription(description) }
             .setAllowedAuthenticators(BIOMETRIC_STRONG)
             .setNegativeButtonText("Cancel")
             .build()

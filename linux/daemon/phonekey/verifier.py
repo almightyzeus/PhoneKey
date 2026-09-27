@@ -69,8 +69,12 @@ class Verifier:
 
     # ---- authentication -------------------------------------------------
 
-    def begin_auth(self, device_id: bytes, *, account: str, action: str, resource: str) -> tuple[bytes, bytes]:
-        """Creates a signed AUTH_REQUEST. Returns (request_id, message bytes)."""
+    def begin_auth(self, device_id: bytes, *, account: str, action: str, resource: str,
+                   detail: str | None = None) -> tuple[bytes, bytes]:
+        """Creates a signed AUTH_REQUEST. Returns (request_id, message bytes).
+
+        `detail` (e.g. the sudo command line) is shown by the phone and covered
+        by both signatures; the caller must have made it display-safe."""
         self._expire()
         record = self.registry.get(device_id)
         if record is None or record.account != account:
@@ -79,7 +83,7 @@ class Verifier:
             raise ProtocolError(ErrorCode.BUSY, "a request is already pending for this device")
 
         request_id = secrets.token_bytes(16)
-        unsigned = codec.encode_unsigned(MsgType.AUTH_REQUEST, {
+        fields = {
             "verifier_id": self.verifier_id,
             "device_id": device_id,
             "request_id": request_id,
@@ -89,7 +93,10 @@ class Verifier:
             "account": account,
             "issued_at": _now_ms(),
             "ttl_ms": int(self.auth_ttl * 1000),
-        })
+        }
+        if detail is not None:
+            fields["detail"] = detail
+        unsigned = codec.encode_unsigned(MsgType.AUTH_REQUEST, fields)
         message = codec.with_signature(unsigned, crypto.sign(self._key, crypto.LABEL_AUTH_REQUEST, unsigned))
         self._pending[request_id] = _PendingAuth(
             device_id, account, crypto.sha256(message), self._clock() + self.auth_ttl

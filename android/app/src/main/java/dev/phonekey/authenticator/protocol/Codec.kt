@@ -53,6 +53,7 @@ class Message(
     fun has(name: String) = name in fields
     fun bytes(name: String) = fields.getValue(name) as ByteArray
     fun string(name: String) = fields.getValue(name) as String
+    fun stringOrNull(name: String) = fields[name] as String?
     fun long(name: String) = fields.getValue(name) as Long
 }
 
@@ -82,6 +83,7 @@ object Codec {
         FieldSpec(0x10, "status", Kind.U8),
         FieldSpec(0x11, "error_code", Kind.U16),
         FieldSpec(0x12, "error_detail", Kind.STRING, 0, 128),
+        FieldSpec(0x13, "detail", Kind.STRING, 1, 256),
         FieldSpec(SIGNATURE_TAG, "signature", Kind.BYTES, 8, 72),
     )
     private val byTag = FIELDS.associateBy { it.tag }
@@ -99,7 +101,8 @@ object Codec {
             "attestation_chain",
         ),
         MsgType.AUTH_REQUEST to schema(
-            "verifier_id device_id request_id challenge action resource account issued_at ttl_ms signature"
+            "verifier_id device_id request_id challenge action resource account issued_at ttl_ms signature",
+            "detail",
         ),
         MsgType.AUTH_RESPONSE to schema("verifier_id device_id request_id request_hash signature"),
         MsgType.STATUS to schema("status", "verifier_id device_id request_id"),

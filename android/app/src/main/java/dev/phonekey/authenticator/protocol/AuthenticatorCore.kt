@@ -42,6 +42,8 @@ sealed interface AuthDecision {
         val action: String,
         val resource: String,
         val account: String,
+        /** What exactly is approved, e.g. the sudo command line. Signed by the verifier. */
+        val detail: String?,
         val ttlMs: Long,
         /** AUTH_RESPONSE without signature; sign LABEL_AUTH_ASSERTION + this. */
         val unsignedResponse: ByteArray,
@@ -146,7 +148,7 @@ object AuthenticatorCore {
             "request_hash" to sha256(data),
         ))
         return AuthDecision.Prompt(record, requestId, msg.string("action"), msg.string("resource"),
-            msg.string("account"), msg.long("ttl_ms"), unsigned)
+            msg.string("account"), msg.stringOrNull("detail"), msg.long("ttl_ms"), unsigned)
     }
 
     fun error(code: ErrorCode, requestId: ByteArray? = null): ByteArray {

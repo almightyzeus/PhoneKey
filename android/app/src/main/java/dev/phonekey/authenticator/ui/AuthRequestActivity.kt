@@ -63,7 +63,7 @@ class AuthRequestActivity : AppCompatActivity(), PhoneKeyService.Listener {
 
             Target: ${prompt.resource}
             Account: ${prompt.account}
-        """.trimIndent()
+        """.trimIndent() + (prompt.detail?.let { "\n\nCommand:\n$it" } ?: "")
         approveButton.setOnClickListener { approve() }
         findViewById<Button>(R.id.auth_deny).setOnClickListener {
             service?.failPrompt(ErrorCode.USER_DENIED)
@@ -164,6 +164,7 @@ class AuthRequestActivity : AppCompatActivity(), PhoneKeyService.Listener {
         message.text = ""
         BiometricSigner(this).sign(signature, Labels.AUTH_ASSERTION + prompt.unsignedResponse,
             AuthenticatorCore.describeAction(prompt.action), "${prompt.record.displayName} · ${prompt.account}",
+            prompt.detail, // shown in the fingerprint prompt too, which is all you see on the lock screen
         ) { result ->
             prompting = false
             result.fold(

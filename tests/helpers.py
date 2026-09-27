@@ -41,6 +41,7 @@ class VerifierTestCase(unittest.TestCase):
     def pair(self, phone: SimulatedAuthenticator, account: str = ACCOUNT):
         return self.verifier.complete_pairing(phone.handle_pair_request(self.verifier.begin_pairing(account=account)))
 
-    def request(self, device_id: bytes | None = None, account: str = ACCOUNT, action: str = "linux.sudo"):
+    def request(self, device_id: bytes | None = None, account: str = ACCOUNT, action: str = "linux.sudo",
+                detail: str | None = None):
         return self.verifier.begin_auth(device_id or self.phone.device_id, account=account, action=action,
-                                        resource="test-host")
+                                        resource="test-host", detail=detail)
