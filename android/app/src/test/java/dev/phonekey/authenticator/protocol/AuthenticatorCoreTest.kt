@@ -133,7 +133,7 @@ class AuthenticatorCoreTest {
         val msg = Codec.decode(Codec.withSignature(unsigned, sign(deviceKey, Labels.PAIR_RESPONSE, unsigned)))
         assertArrayEquals(offer.requestHash, msg.bytes("request_hash"))
         assertArrayEquals(deviceId, msg.bytes("device_id"))
-        assertEquals(2 + 10 + 2 + 20, msg.bytes("attestation_chain").size)
+        assertEquals(2 + 10, msg.bytes("attestation_chain").size) // leaf only
     }
 
     @Test
@@ -159,6 +159,17 @@ class AuthenticatorCoreTest {
     fun oversizedAttestationIsOmitted() {
         assertEquals(null, AuthenticatorCore.encodeAttestation(listOf(ByteArray(13_000))))
         assertEquals(null, AuthenticatorCore.encodeAttestation(null))
+    }
+
+    @Test
+    fun onlyTheLeafAttestationCertificateIsSent() {
+        val offer = AuthenticatorCore.parsePairRequest(pairRequest(verifierKey))
+        val chain = listOf(ByteArray(900) { 1 }, ByteArray(1200) { 2 }, ByteArray(700) { 3 })
+        val unsigned = AuthenticatorCore.unsignedPairResponse(offer, deviceKey.public.encoded, "phone", 2, chain)
+        val msg = Codec.decode(Codec.withSignature(unsigned, ByteArray(64))) // signature not checked by decode
+        val sent = msg.bytes("attestation_chain")
+        assertEquals(2 + 900, sent.size)
+        assertArrayEquals(ByteArray(900) { 1 }, sent.copyOfRange(2, sent.size))
     }
 
     @Test

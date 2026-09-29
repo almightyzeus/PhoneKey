@@ -47,6 +47,10 @@ class AttestationTest(unittest.TestCase):
         summary = attestation.summarize(chain(cert(key_description(1, self.CHALLENGE)), cert(None)), self.CHALLENGE)
         self.assertEqual("TEE, bound to this pairing, 2 certificates, roots not verified", summary)
 
+    def test_leaf_only(self):  # what the phone sends (PROTOCOL.md §5.4)
+        summary = attestation.summarize(chain(cert(key_description(1, self.CHALLENGE))), self.CHALLENGE)
+        self.assertEqual("TEE, bound to this pairing, leaf certificate only, roots not verified", summary)
+
     def test_strongbox_level(self):
         summary = attestation.summarize(chain(cert(key_description(2, self.CHALLENGE))), self.CHALLENGE)
         self.assertTrue(summary.startswith("StrongBox, bound"))

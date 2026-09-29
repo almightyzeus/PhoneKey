@@ -76,4 +76,5 @@ def summarize(chain: bytes | None, expected_challenge: bytes) -> str:
     except (ValueError, IndexError, x509.ExtensionNotFound) as e:
         return f"unparsable ({e.__class__.__name__})"
     bound = "bound to this pairing" if challenge == expected_challenge else "NOT bound to this pairing"
-    return f"{level}, {bound}, {len(certs)} certificates, roots not verified"
+    certs_text = "leaf certificate only" if len(certs) == 1 else f"{len(certs)} certificates"
+    return f"{level}, {bound}, {certs_text}, roots not verified"

@@ -106,7 +106,10 @@ object AuthenticatorCore {
             "request_hash" to offer.requestHash,
             "key_security" to keySecurity,
         )
-        encodeAttestation(attestationChain)?.let { fields["attestation_chain"] = it }
+        // Leaf certificate only: it carries the security level and the challenge the laptop
+        // checks. The full chain (~3.3 KB) dropped the BLE link during pairing, and the
+        // laptop does not verify roots anyway (PROTOCOL.md §5.4, SECURITY.md D-5).
+        encodeAttestation(attestationChain?.take(1))?.let { fields["attestation_chain"] = it }
         return Codec.encodeUnsigned(MsgType.PAIR_RESPONSE, fields)
     }
 

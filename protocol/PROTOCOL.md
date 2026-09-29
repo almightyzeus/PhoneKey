@@ -333,7 +333,10 @@ is reported in `key_security`.
 
 `attestation_chain` is the Keystore attestation certificate chain for the
 device key. It is encoded as a sequence of `u16 length || DER certificate`,
-leaf first. It is OPTIONAL.
+leaf first. It is OPTIONAL. The authenticator SHOULD send **only the leaf
+certificate**: it holds everything the verifier reads (security level and
+challenge), and the full chain (about 3.3 KB) made the pairing reply large
+enough to drop the BLE link on the MVP hardware.
 
 For the MVP:
 
@@ -348,8 +351,8 @@ For the MVP:
 
 A future version may offer an opt-in policy that requires valid attestation.
 
-The Linux verifier records a summary such as `TEE, bound to this pairing, 5
-certificates, roots not verified`. It reads the Keystore security level and
+The Linux verifier records a summary such as `TEE, bound to this pairing, leaf
+certificate only, roots not verified`. It reads the Keystore security level and
 checks that the attestation challenge equals this pairing's `request_hash`,
 which shows the key was created for this pairing. It does not verify the chain
 against Google's roots.
