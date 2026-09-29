@@ -4,7 +4,7 @@ import os
 import pwd
 import unittest
 
-from phonekey.daemon import ACTIONS, LOCAL_ONLY, authorize, pairable_account
+from phonekey.daemon import ACTIONS, LOCAL_ONLY, authorize, pairable_account, parse_request
 
 ME = os.getuid()
 MY_NAME = pwd.getpwuid(ME).pw_name
@@ -67,6 +67,20 @@ class AuthorizeTest(unittest.TestCase):
 
     def test_actions_are_a_fixed_set(self):
         self.assertEqual({"phonekey.test", "linux.sudo", "linux.unlock", "linux.login"}, set(ACTIONS.values()))
+
+
+class ParseRequestTest(unittest.TestCase):
+    def test_valid(self):
+        self.assertEqual(parse_request(b'{"op": "auth", "action": "sudo", "account": "a"}')["op"], "auth")
+        self.assertEqual(parse_request(b'{"op": "status"}'), {"op": "status"})
+
+    def test_malformed_requests_are_rejected_not_crashing(self):
+        for line in (b"", b"not json", b"\xff\xfe", b"[]", b'"op"', b"42", b"{}", b'{"op": 1}',
+                     b'{"op": "auth", "action": []}', b'{"op": "auth", "action": {"a": 1}}',
+                     b'{"op": "auth", "account": null}', b'{"op": "pair", "account": 5}'):
+            with self.subTest(line=line):
+                with self.assertRaises(ValueError):
+                    parse_request(line)
 
 
 if __name__ == "__main__":

@@ -105,7 +105,11 @@ def write_atomic(path: Path, text: str) -> None:
     """Replaces `path` in one rename, keeping its mode and owner."""
     st = os.stat(path)
     tmp = path.with_name(f".{path.name}.phonekey-new")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IMODE(st.st_mode))
+    try:
+        os.unlink(tmp)  # left over from an interrupted run
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, stat.S_IMODE(st.st_mode))
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)

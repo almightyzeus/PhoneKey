@@ -30,6 +30,8 @@ from .verifier import Verifier
 log = logging.getLogger("phonekeyd")
 
 MAX_REQUEST = 4096
+MAX_CLIENTS = 64         # simultaneous local connections, all users together
+MAX_CLIENTS_PER_UID = 8  # so one local user cannot starve the others (or PAM, uid 0)
 CLIENT_IDLE_TIMEOUT = 10  # seconds to send a request after connecting
 PAIRING_WINDOW = 120.0
 # The phone displays these; clients pick one, they cannot supply free text.
@@ -67,6 +69,20 @@ def authorize(op: str, uid: int, account: str | None, *, daemon_uid: int, system
             return "unknown caller"
         return None if account == name else "may only authenticate your own account"
     return "unknown operation"
+
+
+def parse_request(line: bytes) -> dict:
+    """One JSON object with string `op` and optional string `account`/`action`. Raises ValueError."""
+    try:
+        request = json.loads(line)
+    except (ValueError, UnicodeDecodeError):
+        raise ValueError("not JSON") from None
+    if not isinstance(request, dict) or not isinstance(request.get("op"), str):
+        raise ValueError("not a request")
+    for key in ("account", "action"):
+        if key in request and not isinstance(request[key], str):
+            raise ValueError(f"{key} must be a string")
+    return request
 
 
 def _user_name(uid: int) -> str | None:
@@ -160,6 +176,7 @@ class Client:
         if self.closed:
             return
         self.closed = True
+        self.server.forget(self)
         self._cancel_idle()
         GLib.source_remove(self._watch)
         self.sock.close()
@@ -172,6 +189,7 @@ class IpcServer:
                  presence_check: Callable[[int, str], str | None]):
         self.path, self.core, self.system_mode, self.hostname = path, core, system_mode, hostname
         self.presence_check = presence_check
+        self.clients: set[Client] = set()
         self.daemon_uid = os.getuid()
         self.sock: socket.socket | None = None
 
@@ -199,17 +217,38 @@ class IpcServer:
                 pass
 
     def _accept(self, fd, condition):
-        conn, _ = self.sock.accept()
-        Client(self, conn)
+        try:
+            conn, _ = self.sock.accept()
+        except OSError as e:  # e.g. out of file descriptors: keep serving the others
+            log.warning("accept failed: %s", e)
+            return True
+        _pid, uid = peer_cred(conn)
+        same_uid = sum(1 for c in self.clients if c.uid == uid)
+        if len(self.clients) >= MAX_CLIENTS or same_uid >= MAX_CLIENTS_PER_UID:
+            log.warning("too many connections (uid %d); refusing one", uid)
+            conn.close()
+            return True
+        client = Client(self, conn)
+        self.clients.add(client)
         return True
+
+    def forget(self, client: Client) -> None:
+        self.clients.discard(client)
 
     def handle(self, client: Client, line: bytes) -> None:
         try:
-            request = json.loads(line)
-            op = request["op"]
-        except (ValueError, KeyError, TypeError):
+            request = parse_request(line)
+        except ValueError:
             client.send({"result": "error", "reason": "bad request"}, final=True)
             return
+        try:
+            self._handle(client, request)
+        except Exception:  # never leave a caller (e.g. sudo) waiting on a half-handled request
+            log.exception("error handling %s request", request["op"])
+            client.send({"result": "error", "reason": "internal error"}, final=True)
+
+    def _handle(self, client: Client, request: dict) -> None:
+        op = request["op"]
         account = request.get("account")
         reason = authorize(op, client.uid, account, daemon_uid=self.daemon_uid, system_mode=self.system_mode,
                            action=request.get("action"))
