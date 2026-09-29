@@ -189,24 +189,42 @@ class DaemonCore:
             self._end_pairing({"result": "cancelled"})
 
     def authenticate(self, account: str, action: str, resource: str, on_event: EventSink,
-                     detail: str | None = None) -> None:
+                     detail: str | None = None) -> bytes | None:
+        """Sends an AUTH_REQUEST; returns its request_id (for cancel_auth), or None if not sent."""
         connected = self.connected_device_ids()
         candidates = [r for r in self.verifier.registry.for_account(account) if r.device_id in connected]
         if not candidates:
             on_event({"result": "unavailable", "reason": "no paired phone connected"})
-            return
+            return None
         device = candidates[0]
         try:
             request_id, message = self.verifier.begin_auth(device.device_id, account=account, action=action,
                                                            resource=resource, detail=detail)
         except ProtocolError as e:
             on_event({"result": "unavailable", "reason": e.code.name})
-            return
+            return None
         timer = self._scheduler.call_later(
             self.verifier.auth_ttl, lambda: self._auth_timeout(request_id))
         self._waiters[request_id] = _Waiter(device.device_id, on_event, timer)
         on_event({"event": "sent", "device": device.display_name})
         self._send(message, self._peer_id_for(device.device_id))
+        return request_id
+
+    def cancel_auth(self, request_id: bytes) -> None:
+        """The local caller stopped waiting (e.g. the lock screen gave up, Ctrl-C on sudo).
+
+        The request becomes invalid here at once, and the phone is told to dismiss
+        its prompt (ERROR EXPIRED for that request_id, PROTOCOL.md §8.1)."""
+        waiter = self._waiters.pop(request_id, None)
+        if waiter is None:
+            return
+        self.verifier.cancel(request_id)
+        if waiter.timer is not None:
+            self._scheduler.cancel(waiter.timer)
+        peer_id = next((pid for pid, p in self._peers.items() if p.device_id == waiter.device_id), None)
+        if peer_id is not None:
+            self._send(codec.encode(MsgType.ERROR, {"error_code": ErrorCode.EXPIRED, "request_id": request_id}),
+                       peer_id)
 
     # ---- internals -------------------------------------------------------
 

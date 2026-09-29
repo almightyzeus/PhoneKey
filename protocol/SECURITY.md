@@ -135,6 +135,11 @@ Each threat names the mechanism that defeats it and the tests that show it
   and automated triggers, not a determined attacker in your account.
   **Deny any prompt you did not start.**
 
+- **R‑9 Unexpected "Unlock screen" prompts.** Any program running as you can
+  ask for an unlock approval (D‑16). Approving it unlocks nothing, but a
+  prompt you did not cause is a sign something is wrong: **deny it**. The
+  real unlock prompt appears only the moment you wake your locked screen.
+
 ## 7. Security-sensitive decisions (need explicit sign-off)
 
 | ID | Decision | Choice | Trade-off |
@@ -150,6 +155,7 @@ Each threat names the mechanism that defeats it and the tests that show it
 | D‑13 | What the phone shows for sudo | The daemon reads the command line of the process that connected (SO_PEERCRED pid) when that process is root and named `sudo`/`sudoedit`, shell-quotes it, escapes control/bidi characters, and caps it at 256 bytes with a visible truncation marker. It is sent as the signed `detail` field and shown on the request screen and inside the fingerprint prompt. The `sudo` action is accepted only from root callers. | Clients cannot supply the text, so it cannot be spoofed by an unprivileged program. The command can be visible on the lock screen while a prompt is open. |
 | D‑14 | Starting automatically | **Laptop:** `phonekeyd` is a normal boot service (unprivileged user, hardened unit). If Bluetooth is off or not ready it keeps running and starts scanning when Bluetooth appears; if there is no adapter yet, systemd retries every 5 s. **Phone:** a non-exported receiver starts the service after boot (`BOOT_COMPLETED`, which Android sends only after the first unlock) and after an app update (`MY_PACKAGE_REPLACED`), only if a computer is paired and the Bluetooth permissions are granted. | Starting grants nothing: each approval still needs a fingerprint, and while nothing runs sudo simply asks for the password. The cost: after a reboot the phone advertises the PhoneKey service UUID whenever its laptop is not connected (R‑7), without the app being opened first. |
 | D‑15 | Who may trigger a sudo prompt | Only someone at this computer (`presence.py`). If the `sudo` process is in a logind session, that session must be local, the account's own, and active. Desktop terminals run outside the login session (under `user@UID.service`), so otherwise the process must have a controlling terminal **and** the account must have an active local session on a seat. Any lookup failure refuses. Refused requests never reach the phone: the result is `unavailable`, and sudo asks for the password. | Blocks SSH logins, cron jobs and background services. Not a hard boundary against code already running as the user (R‑8). |
+| D‑16 | Screen unlock | `auth sufficient pam_phonekey.so action=unlock timeout=20` before `@include common-auth` in `/etc/pam.d/cinnamon-screensaver`, only via `sudo phonekey enable unlock`. The lock screen runs PAM as soon as you wake it, so the phone is asked first; the password box appears when you deny, after 20 s, or at once if the phone is not connected. Presence: Cinnamon's PAM helper is a D-Bus-activated user service with no logind session and no terminal, and `LockedHint` is not maintained, so the rule is only that the account has an active local session on a seat. When the lock screen gives up, the daemon withdraws the phone prompt (PROTOCOL.md §8.1 step 8). | The requester cannot be proven to be the lock screen; a program running as you that fakes an unlock request only gets "ok" back and unlocks nothing (R‑9). After a phone unlock, `pam_gnome_keyring` (which follows in the stack) does not run; the keyring normally stays unlocked for the session anyway. |
 | D‑12 | PAM results and waiting | Approved → success. Denied on the phone → `PAM_AUTH_ERR`. Anything else (no daemon, socket not owned by `phonekey`, no phone connected, timeout, error) → `PAM_AUTHINFO_UNAVAIL`. With `sufficient`, every non-success goes on to the password prompt. The module waits at most 35 s (the daemon's request lives 30 s). | While the phone prompt is open, the password prompt waits. Tap **Deny** on the phone to get it at once. When no phone is connected, the module returns in milliseconds. |
 | D‑9 | Replay state in memory only | Yes | A restart invalidates in-flight requests, which is the safe direction. |
 | D‑11 | BLE roles and link | Phone = peripheral (GATT server, advertises); laptop = central, connecting over **its own L2CAP LE socket** to the phone's ATT channel, with a minimal ATT client (`att.py`) | The laptop's Realtek RTL8822CU rejects all LE advertising. Android derives a classic-Bluetooth bond during LE pairing and its advertisements carry no "BR/EDR not supported" flag, so BlueZ's `Device1.Connect` kept choosing classic Bluetooth (failed reconnects, and it could try audio/phonebook profiles). The socket requires `BT_SECURITY_HIGH` (authenticated, encrypted bond). Roles carry no security meaning. See R‑7. |
@@ -230,8 +236,18 @@ These work **without the phone** and **without `phonekeyd` running**.
    **Before enabling PhoneKey for sudo, open a separate root shell and keep it
    open until you have verified sudo works both with and without the phone.**
 
-Phase 6 (screen unlock) and Phase 7 (login) will add procedures specific to
-their PAM files before they are enabled.
+**Screen unlock (Phase 6).** The text consoles use `/etc/pam.d/login`, which
+PhoneKey never touches, so they always accept your password:
+
+1. Press **Ctrl+Alt+F3** (on many laptops **Ctrl+Alt+Fn+F3**). A black text
+   screen shows `<hostname> login:`.
+2. Log in with your user name and password.
+3. Run `sudo phonekey disable`, then `loginctl unlock-session <id>` (the id
+   of your desktop session is in `loginctl`, e.g. `c2`). Nothing is printed.
+4. `exit`, then **Ctrl+Alt+F7** (or Fn+F7). The desktop is back, unlocked.
+
+Rehearsed on the MVP laptop before enabling unlock (2026-09-29). Phase 7
+(login) will add its own procedure before it is enabled.
 
 ## 10. Rules for contributors
 

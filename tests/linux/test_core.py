@@ -171,6 +171,33 @@ class AuthOverLinkTest(CoreTestCase):
         self.assertEqual({"result": "unavailable", "reason": "phone disconnected"}, self.events[-1])
         self.assertEqual({}, self.scheduler.timers)
 
+    def test_caller_giving_up_withdraws_request(self):
+        phone = self.connect(self.phone)
+        phone.auto_reply = False
+        request_id = self.core.authenticate(ACCOUNT, "linux.unlock", "test-host", self.events.append)
+        self.assertEqual("sent", self.events[-1]["event"])
+        self.core.cancel_auth(request_id)
+        told = phone.received[-1]
+        self.assertEqual(MsgType.ERROR, told.type)  # phone dismisses its prompt
+        self.assertEqual((ErrorCode.EXPIRED, request_id), (told["error_code"], told["request_id"]))
+        self.assertEqual(1, len(self.events))  # no result to a caller that has gone
+        phone.send(phone.held[0])  # approving the stale prompt changes nothing
+        self.assertEqual(1, len(self.events))
+        phone.auto_reply = True
+        self.assertEqual({"result": "ok"}, self.authenticate())  # the device is free again, not BUSY
+
+    def test_cancel_after_result_or_unknown_is_harmless(self):
+        phone = self.connect(self.phone)
+        request_id = self.core.authenticate(ACCOUNT, "phonekey.test", "test-host", self.events.append)
+        self.assertEqual({"result": "ok"}, self.events[-1])
+        before = len(phone.received)
+        self.core.cancel_auth(request_id)
+        self.core.cancel_auth(bytes(16))
+        self.assertEqual(before, len(phone.received))
+
+    def test_not_sent_returns_no_request_id(self):
+        self.assertIsNone(self.core.authenticate(ACCOUNT, "phonekey.test", "test-host", self.events.append))
+
     def test_reconnect_then_success(self):
         phone = self.connect(self.phone)
         self.disconnect(phone)

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from phonekey import presence
-from phonekey.presence import Session, decide
+from phonekey.presence import Session, decide, decide_unlock
 
 ME = "alice"
 LOCAL = Session(ME, remote=False, active=True, seat="seat0")
@@ -38,6 +38,32 @@ class DecideTest(unittest.TestCase):
                          [Session("bob", False, True, "seat0")]):
             with self.subTest(sessions=sessions):
                 self.assertIsNotNone(decide(ME, None, has_tty=True, local_sessions=sessions))
+
+
+class UnlockTest(unittest.TestCase):
+    """D-16: Cinnamon's PAM helper has no session and no terminal; the account must be at the seat."""
+
+    def test_active_local_session_allowed(self):
+        self.assertIsNone(decide_unlock(ME, [SSH, LOCAL]))
+
+    def test_refused_without_a_local_active_seat_session(self):
+        for sessions in ([], [SSH], [Session(ME, False, False, "seat0")], [Session(ME, False, True, "")],
+                         [Session("bob", False, True, "seat0")]):
+            with self.subTest(sessions=sessions):
+                self.assertIsNotNone(decide_unlock(ME, sessions))
+
+    def test_checker_uses_unlock_rule_without_tty_or_session(self):
+        proc = Path(tempfile.mkdtemp())  # no /proc entry at all: tty and session are irrelevant
+        check = presence.checker(FakeLogind(sessions=[LOCAL]), proc)
+        self.assertIsNone(check(4242, ME, "linux.unlock"))
+        self.assertIsNotNone(check(4242, ME, "linux.sudo"))  # sudo still needs a terminal
+        self.assertIsNotNone(presence.checker(FakeLogind(sessions=[SSH]), proc)(4242, ME, "linux.unlock"))
+
+    def test_unlock_lookup_failure_refuses(self):
+        class Broken(FakeLogind):
+            def sessions(self):
+                raise RuntimeError("bus down")
+        self.assertIn("cannot determine", presence.checker(Broken())(1, ME, "linux.unlock"))
 
 
 class TtyTest(unittest.TestCase):

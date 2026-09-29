@@ -1,4 +1,4 @@
-"""Local-presence check for sudo approvals (SECURITY.md R-8, D-15).
+"""Local-presence checks for sudo (SECURITY.md R-8, D-15) and screen unlock (D-16).
 
 PhoneKey should prompt the phone only for someone sitting at this laptop, not
 for an SSH login, a cron job or a background service running as the user.
@@ -54,6 +54,18 @@ def decide(account: str, session: Session | None, has_tty: bool, local_sessions:
     return None
 
 
+def decide_unlock(account: str, sessions: list[Session]) -> str | None:
+    """Screen unlock (D-16): the account must have an active local session on a seat.
+
+    Cinnamon's PAM helper runs as a D-Bus-activated user service: no logind
+    session, no terminal, and LockedHint is not maintained, so there is nothing
+    stronger to check. A program faking an unlock request gains nothing from an
+    approval (it only gets "ok" back); it can only cause an unexpected prompt."""
+    if any(s.name == account and not s.remote and s.active and s.seat for s in sessions):
+        return None
+    return f"{account} has no active session at this computer"
+
+
 def has_tty(pid: int, proc: Path = Path("/proc")) -> bool:
     """Whether the process has a controlling terminal (field 7 of /proc/PID/stat)."""
     try:
@@ -96,10 +108,12 @@ class Logind:
         return [self._session(path) for _id, _uid, _user, _seat, path in self._manager.ListSessions()]
 
 
-def checker(logind: Logind, proc: Path = Path("/proc")) -> Callable[[int, str], str | None]:
-    """check(pid, account) -> None if allowed, else the reason. Fails closed."""
-    def check(pid: int, account: str) -> str | None:
+def checker(logind: Logind, proc: Path = Path("/proc")) -> Callable[[int, str, str], str | None]:
+    """check(pid, account, action) -> None if allowed, else the reason. Fails closed."""
+    def check(pid: int, account: str, action: str = "linux.sudo") -> str | None:
         try:
+            if action == "linux.unlock":
+                return decide_unlock(account, logind.sessions())
             session = logind.session_of(pid)
             local = [] if session is not None else logind.sessions()
         except Exception as e:  # D-Bus down, process gone, ...: refuse

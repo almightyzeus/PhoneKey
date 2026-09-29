@@ -474,6 +474,11 @@ Every error is fail-closed: the requested action is **not** authorized.
 7. Success only if every check passes. Anything else — `ERROR`, timeout,
    disconnect, malformed data — is failure. Remove the pending entry in every
    terminal case.
+8. If the local caller stops waiting before a result (the lock screen gives
+   up, sudo is interrupted), remove the pending entry and send the
+   authenticator `ERROR` with `error_code = EXPIRED` and that `request_id`, so
+   it dismisses the prompt. A late `AUTH_RESPONSE` then fails as
+   `UNKNOWN_REQUEST`.
 
 ### 8.2 Authenticator procedure
 
@@ -496,8 +501,10 @@ Every error is fail-closed: the requested action is **not** authorized.
 7. On biometric success, sign `AUTH_RESPONSE` and send it. On failure or
    cancel, send `BIOMETRIC_FAILED` / `USER_DENIED`. On
    `KeyPermanentlyInvalidatedException`, send `KEY_INVALIDATED`.
-8. Dismiss the prompt if `ttl_ms` passes (measured from receipt) or the link
-   drops.
+8. Dismiss the prompt if `ttl_ms` passes (measured from receipt), the link
+   drops, or the verifier sends `ERROR` naming the prompt's `request_id` over
+   the same link (§8.1 step 8). `ERROR` is unsigned, so it may only ever
+   dismiss a prompt, never approve one.
 
 ### 8.3 Replay and freshness
 

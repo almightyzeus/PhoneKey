@@ -28,12 +28,17 @@ _INCLUDE_COMMON_AUTH = re.compile(r"^\s*@include\s+common-auth\s*$")
 
 @dataclass(frozen=True)
 class Service:
-    name: str      # file in /etc/pam.d
-    action: str    # daemon action (daemon.ACTIONS)
+    name: str                   # file in /etc/pam.d
+    action: str                 # daemon action (daemon.ACTIONS)
+    timeout: int | None = None  # seconds pam_phonekey waits (module default: 35)
 
 
-# Phase 5: sudo only. Later phases add the lock screen and login, one at a time.
-SERVICES = {"sudo": Service("sudo", "sudo")}
+# Enabled one at a time with `phonekey enable <key>`. Login (Phase 7) is not offered.
+SERVICES = {
+    "sudo": Service("sudo", "sudo"),
+    # Shorter: you wait in front of a locked screen, and the password box appears after it (D-16).
+    "unlock": Service("cinnamon-screensaver", "unlock", timeout=20),
+}
 
 
 class PamConfigError(Exception):
@@ -41,7 +46,8 @@ class PamConfigError(Exception):
 
 
 def module_line(service: Service) -> str:
-    return f"auth    sufficient    {MODULE_NAME} action={service.action}"
+    line = f"auth    sufficient    {MODULE_NAME} action={service.action}"
+    return line + (f" timeout={service.timeout}" if service.timeout else "")
 
 
 def is_enabled(text: str) -> bool:

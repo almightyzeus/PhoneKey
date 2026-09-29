@@ -1,8 +1,8 @@
 # PhoneKey — Linux verifier
 
-**Current state: Phase 5.** BLE pairing, end-to-end authentication
-(`phonekey pair`, `phonekey test`), and opt-in `sudo` through the PAM module
-`pam_phonekey.so`. Lock screen and login are not done yet.
+**Current state: Phase 6.** BLE pairing, end-to-end authentication
+(`phonekey pair`, `phonekey test`), and opt-in `sudo` and lock-screen unlock
+through the PAM module `pam_phonekey.so`. Login is not done.
 
 Dependencies: Python 3 plus the Debian packages `python3-cryptography`,
 `python3-dbus` and `python3-gi` (all preinstalled on Linux Mint). The daemon runs
@@ -122,6 +122,21 @@ SECURITY.md D‑13). Only sudo run by someone at this computer reaches the phone
 over SSH, from cron or from a background service you get the password prompt
 (`presence.py`, SECURITY.md D‑15). Approving is equivalent to typing your password for that
 command. Deny prompts you did not start (SECURITY.md R‑8). The recovery procedures are in SECURITY.md §9.
+
+## Using PhoneKey for the lock screen (opt-in)
+
+```bash
+sudo phonekey enable unlock --dry-run   # the exact diff and the recovery steps
+sudo phonekey enable unlock             # same, then asks you to type "enable"
+```
+
+This adds `auth sufficient pam_phonekey.so action=unlock timeout=20` before
+`@include common-auth` in `/etc/pam.d/cinnamon-screensaver`. When you wake the
+locked screen it shows *PhoneKey: confirm on your phone*, and a fingerprint
+unlocks. The password box appears when you tap Deny, after 20 s, or straight
+away if the phone is not connected. If the lock screen gives up waiting, the
+phone prompt is withdrawn. Recovery without the lock screen (text console,
+Ctrl+Alt+Fn+F3) is in SECURITY.md §9.
 
 ### The PAM module
 

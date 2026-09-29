@@ -281,12 +281,38 @@ def forge_response(request: bytes, device_id: bytes) -> bytes:
     return codec.with_signature(unsigned, crypto.sign(crypto.generate_key(), crypto.LABEL_AUTH_ASSERTION, unsigned))
 
 
-RECOVERY = """\
+EFFECT = {
+    "sudo": "Effect: sudo first asks your phone; if the phone is not connected, you deny, or it does\n"
+            "not answer, sudo asks for your password as before. No other PAM file is changed.",
+    "unlock": "Effect: waking the locked screen first asks your phone (\"PhoneKey: confirm on your\n"
+              "phone\"). If the phone is not connected the password box appears at once; if you deny,\n"
+              "or it does not answer within {timeout} s, the password box appears. No other PAM file is changed.",
+}
+
+RECOVERY = {
+    "sudo": """\
 If sudo misbehaves, the password still works: deny on the phone or wait {timeout} s.
 To undo without sudo:   pkexec phonekey disable      (uses polkit, not /etc/pam.d/sudo)
 Backups of the original file are in {backups}/.
 Last resort: GRUB → Advanced options → recovery mode → root shell →
-             mount -o remount,rw / && phonekey disable   (see protocol/SECURITY.md §9)"""
+             mount -o remount,rw / && phonekey disable   (see protocol/SECURITY.md §9)""",
+    "unlock": """\
+If the lock screen misbehaves, the password still works: deny on the phone or wait {timeout} s.
+If you cannot unlock at all (the text console does not use this PAM file):
+  Ctrl+Alt+F3 (laptops: Ctrl+Alt+Fn+F3) → log in with your password →
+  sudo phonekey disable && loginctl unlock-session <id from 'loginctl'> →
+  exit → Ctrl+Alt+F7 (Fn+F7)
+Backups of the original file are in {backups}/.   (see protocol/SECURITY.md §9)""",
+}
+
+AFTER_ENABLE = {
+    "sudo": ("Before confirming, open a root shell in ANOTHER terminal (sudo -i) and keep it open\n"
+             "until you have tested sudo in a third terminal.",
+             "Test in a NEW terminal:  sudo -k && sudo true"),
+    "unlock": ("Before confirming, keep this terminal open: 'sudo phonekey disable' here undoes it.",
+               "Test: Super+L, wake the screen, approve on the phone. Then test Deny and a phone\n"
+               "with Bluetooth off (the password box should appear)."),
+}
 
 
 def _require_root(what: str) -> bool:
@@ -320,24 +346,24 @@ def cmd_enable(args: argparse.Namespace) -> int:
         print(f"phonekey: {e}", file=sys.stderr)
         return 1
 
+    timeout = service.timeout or 35
+    before, test = AFTER_ENABLE[args.service]
     print(f"This adds PhoneKey to {path} (module: {module}):\n")
     print(pamconfig.diff(path, old, new))
-    print("Effect: sudo first asks your phone; if the phone is not connected, you deny, or it does\n"
-          "not answer, sudo asks for your password as before. No other PAM file is changed.\n")
-    print(RECOVERY.format(timeout=35, backups=pamconfig.BACKUP_DIR))
+    print(EFFECT[args.service].format(timeout=timeout) + "\n")
+    print(RECOVERY[args.service].format(timeout=timeout, backups=pamconfig.BACKUP_DIR))
     print()
     if args.dry_run:
         print("Dry run: nothing was changed.")
         return 0
-    print("Before confirming, open a root shell in ANOTHER terminal (sudo -i) and keep it open\n"
-          "until you have tested sudo in a third terminal.")
+    print(before)
     if input("Type 'enable' to make this change: ").strip() != "enable":
         print("Nothing changed.")
         return 1
     saved = pamconfig.backup(path, old)
     pamconfig.write_atomic(path, new)
     print(f"\n✓ Enabled for {service.name}. Backup: {saved}")
-    print("Test in a NEW terminal:  sudo -k && sudo true")
+    print(test)
     return 0
 
 

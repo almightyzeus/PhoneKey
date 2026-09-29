@@ -65,6 +65,36 @@ class EditTest(unittest.TestCase):
         self.assertEqual(len(changed), 2)
         self.assertTrue(all(l.startswith("+") for l in changed))
 
+# /etc/pam.d/cinnamon-screensaver as shipped by Linux Mint 22.3 (cinnamon-screensaver 6.6).
+MINT_SCREENSAVER = """@include common-auth
+auth optional pam_gnome_keyring.so
+"""
+UNLOCK = pamconfig.SERVICES["unlock"]
+
+
+class UnlockEditTest(unittest.TestCase):
+    def test_service_file_and_timeout(self):
+        self.assertEqual(("cinnamon-screensaver", "unlock", 20), (UNLOCK.name, UNLOCK.action, UNLOCK.timeout))
+
+    def test_line_goes_first_with_timeout(self):
+        lines = pamconfig.add(MINT_SCREENSAVER, UNLOCK).splitlines()
+        self.assertEqual([pamconfig.MARKER, "auth    sufficient    pam_phonekey.so action=unlock timeout=20",
+                          "@include common-auth", "auth optional pam_gnome_keyring.so"], lines)
+
+    def test_remove_restores_original_exactly(self):
+        self.assertEqual(MINT_SCREENSAVER, pamconfig.remove(pamconfig.add(MINT_SCREENSAVER, UNLOCK)))
+
+    def test_real_screensaver_file_is_accepted_if_present(self):
+        real = Path("/etc/pam.d/cinnamon-screensaver")
+        if not real.exists():
+            self.skipTest("no cinnamon-screensaver")
+        text = pamconfig.read_service_file(real)  # read only
+        if not pamconfig.is_enabled(text):
+            self.assertEqual(pamconfig.remove(pamconfig.add(text, UNLOCK)), text)
+
+    def test_sudo_line_unchanged(self):
+        self.assertEqual("auth    sufficient    pam_phonekey.so action=sudo", pamconfig.module_line(SUDO))
+
 
 class FileTest(unittest.TestCase):
     def setUp(self):

@@ -301,9 +301,17 @@ class PhoneKeyService : Service() {
                     msg.has("verifier_id") && msg.bytes("verifier_id").contentEquals(it.verifierId)
                 }?.let { send(link, AuthenticatorCore.status(StatusCode.READY, it)) }
             }
-            MsgType.ERROR -> if (pendingPairing?.address == address) {
-                val code = ErrorCode.of(msg.long("error_code").toInt())
-                finishPairing(false, "The computer refused pairing (${code?.name ?: "error"})")
+            MsgType.ERROR -> {
+                val prompt = activePrompt
+                if (pendingPairing?.address == address) {
+                    val code = ErrorCode.of(msg.long("error_code").toInt())
+                    finishPairing(false, "The computer refused pairing (${code?.name ?: "error"})")
+                } else if (prompt != null && prompt.address == address &&
+                    AuthenticatorCore.withdrawsPrompt(msg, prompt.prompt)
+                ) {
+                    Log.i(TAG, "computer withdrew the request; dismissing the prompt")
+                    endPrompt() // the computer stopped waiting (lock screen gave up, Ctrl-C)
+                }
             }
             else -> send(link, AuthenticatorCore.error(ErrorCode.MALFORMED))
         }

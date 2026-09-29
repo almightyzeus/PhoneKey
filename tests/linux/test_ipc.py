@@ -62,8 +62,8 @@ class AuthorizeTest(unittest.TestCase):
     def test_unknown_operation_refused(self):
         self.assertIsNotNone(check("unpair", 0, system_mode=True))
 
-    def test_sudo_needs_local_presence(self):
-        self.assertIn("linux.sudo", LOCAL_ONLY)
+    def test_sudo_and_unlock_need_local_presence(self):
+        self.assertEqual({"linux.sudo", "linux.unlock"}, LOCAL_ONLY)
 
     def test_actions_are_a_fixed_set(self):
         self.assertEqual({"phonekey.test", "linux.sudo", "linux.unlock", "linux.login"}, set(ACTIONS.values()))

@@ -88,6 +88,19 @@ class AuthenticatorCoreTest {
     }
 
     @Test
+    fun errorForThePromptsRequestWithdrawsIt() {
+        val prompt = evaluate(authRequest()) as AuthDecision.Prompt
+        fun withdraws(fields: Map<String, Any>) =
+            AuthenticatorCore.withdrawsPrompt(Codec.decode(Codec.encode(MsgType.ERROR, fields)), prompt)
+        assertTrue(withdraws(mapOf("error_code" to ErrorCode.EXPIRED.code.toLong(), "request_id" to prompt.requestId)))
+        assertEquals(false, withdraws(mapOf("error_code" to ErrorCode.EXPIRED.code.toLong())))
+        assertEquals(false, withdraws(mapOf("error_code" to ErrorCode.EXPIRED.code.toLong(),
+            "request_id" to ByteArray(16) { 9 })))
+        val status = Codec.decode(Codec.encode(MsgType.STATUS, mapOf("status" to 1L, "request_id" to prompt.requestId)))
+        assertEquals(false, AuthenticatorCore.withdrawsPrompt(status, prompt))
+    }
+
+    @Test
     fun unknownVerifierIsRefusedWithoutPrompt() {
         val stranger = newKey()
         val request = authRequest(signer = stranger, verifier = AuthenticatorCore.sha256(stranger.public.encoded))

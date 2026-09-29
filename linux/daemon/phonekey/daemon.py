@@ -36,8 +36,8 @@ CLIENT_IDLE_TIMEOUT = 10  # seconds to send a request after connecting
 PAIRING_WINDOW = 120.0
 # The phone displays these; clients pick one, they cannot supply free text.
 ACTIONS = {"test": "phonekey.test", "sudo": "linux.sudo", "unlock": "linux.unlock", "login": "linux.login"}
-# Actions that reach the phone only for someone at this computer (presence.py, SECURITY.md D-15).
-LOCAL_ONLY = {"linux.sudo"}
+# Actions that reach the phone only for someone at this computer (presence.py, SECURITY.md D-15, D-16).
+LOCAL_ONLY = {"linux.sudo", "linux.unlock"}
 
 
 def peer_cred(sock: socket.socket) -> tuple[int, int]:
@@ -186,7 +186,7 @@ class Client:
 
 class IpcServer:
     def __init__(self, path: Path, core: DaemonCore, *, system_mode: bool, hostname: str,
-                 presence_check: Callable[[int, str], str | None]):
+                 presence_check: Callable[[int, str, str], str | None]):
         self.path, self.core, self.system_mode, self.hostname = path, core, system_mode, hostname
         self.presence_check = presence_check
         self.clients: set[Client] = set()
@@ -280,7 +280,7 @@ class IpcServer:
                 client.send({"result": "error", "reason": "unknown action"}, final=True)
                 return
             if action in LOCAL_ONLY:
-                reason = self.presence_check(client.pid, account)
+                reason = self.presence_check(client.pid, account, action)
                 if reason is not None:
                     log.info("auth request not sent to the phone: %s (%s)", action, reason)
                     client.send({"result": "unavailable", "reason": f"not local: {reason}"}, final=True)
@@ -288,7 +288,11 @@ class IpcServer:
             # The phone shows the sudo command; read by us from the caller's process, never sent by it.
             detail = command.sudo_command(client.pid) if action == "linux.sudo" and client.uid == 0 else None
             log.info("auth request: account=%s action=%s%s", account, action, " (with command)" if detail else "")
-            self.core.authenticate(account, action, self.hostname, lambda e: self._forward(client, e), detail)
+            request_id = self.core.authenticate(account, action, self.hostname,
+                                                lambda e: self._forward(client, e), detail)
+            if request_id is not None and not client.closed:
+                # The caller gave up (lock screen timeout, Ctrl-C): withdraw the phone prompt.
+                client.on_close = lambda: self.core.cancel_auth(request_id)
 
     def _pairing_answer(self, line: bytes) -> None:
         try:

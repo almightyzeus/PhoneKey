@@ -154,6 +154,14 @@ object AuthenticatorCore {
             msg.string("account"), msg.stringOrNull("detail"), msg.long("ttl_ms"), unsigned)
     }
 
+    /**
+     * An ERROR naming the prompt's request_id means the computer stopped waiting
+     * (PROTOCOL.md §8.1). ERROR is unsigned, so it may only ever dismiss a prompt,
+     * never approve anything; the caller also checks it came over the prompt's link.
+     */
+    fun withdrawsPrompt(msg: Message, prompt: AuthDecision.Prompt): Boolean =
+        msg.type == MsgType.ERROR && msg.has("request_id") && msg.bytes("request_id").contentEquals(prompt.requestId)
+
     fun error(code: ErrorCode, requestId: ByteArray? = null): ByteArray {
         val fields = mutableMapOf<String, Any>("error_code" to code.code)
         if (requestId != null) fields["request_id"] = requestId
