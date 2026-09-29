@@ -11,8 +11,8 @@ android {
         // 33: KeyInfo.getSecurityLevel(), BLE permissions, GATT server notify API, notification permission.
         minSdk = 33
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0-phase1"
+        versionCode = 5
+        versionName = "0.5.0-phase5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
