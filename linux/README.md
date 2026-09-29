@@ -81,6 +81,11 @@ sudo scripts/install.sh               # asks you to type "install"
 sudo scripts/uninstall.sh [--purge]   # removes it again (works without the phone)
 ```
 
+It starts at every boot. If Bluetooth is off or not ready yet, it waits and
+starts scanning when Bluetooth appears (SECURITY.md D‑14). On the phone,
+PhoneKey starts by itself after a reboot (once you have unlocked the phone) and
+after app updates, as long as a computer is paired.
+
 The service runs as a dedicated `phonekey` user under a hardened systemd unit
 (`linux/systemd/phonekeyd.service`). Its state is in `/var/lib/phonekey` and its
 socket in `/run/phonekey/`. The install copies `pam_phonekey.so` into the PAM

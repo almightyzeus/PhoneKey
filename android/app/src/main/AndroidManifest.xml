@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Restart the service after a reboot or an app update (only if a computer is paired). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- No backups: pairing data must not leave the device (keys never can). -->
     <application
@@ -44,5 +46,15 @@
             android:name=".ble.PhoneKeyService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Not exported: system broadcasts still arrive, other apps cannot trigger it. -->
+        <receiver
+            android:name=".ble.StartReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

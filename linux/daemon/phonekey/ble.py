@@ -197,10 +197,10 @@ class BleCentral:
                                       signal_name="PropertiesChanged", arg0=DEVICE, path_keyword="path")
         try:
             self._start_discovery()
+            log.info("scanning for PhoneKey phones")
         except dbus.exceptions.DBusException as e:
-            on_error(f"cannot start LE discovery: {e.get_dbus_message()}")
-            return
-        log.info("scanning for PhoneKey phones")
+            # Bluetooth off or not ready yet (e.g. early at boot): the watchdog starts scanning later.
+            log.warning("cannot scan yet (%s); retrying every %d s", e.get_dbus_message(), DISCOVERY_WATCHDOG)
         self._glib.timeout_add_seconds(DISCOVERY_WATCHDOG, self._discovery_watchdog)
         on_ready()
 

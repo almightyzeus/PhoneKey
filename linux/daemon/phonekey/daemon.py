@@ -310,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     bus = dbus.SystemBus()
     adapter = find_adapter(bus)
     if adapter is None:
-        log.error("no Bluetooth adapter found")
+        log.error("no Bluetooth adapter found (systemd retries in a few seconds)")
         return 1
 
     hostname = socket.gethostname()
@@ -332,8 +332,12 @@ def main(argv: list[str] | None = None) -> int:
         loop.quit()
         return False
 
+    exit_code = 0
+
     def failed(reason):
+        nonlocal exit_code
         log.error(reason)
+        exit_code = 1  # non-zero, so systemd's Restart=on-failure brings us back
         shutdown()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -341,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     ipc.start()
     transport.central.start(on_ready=lambda: log.info("ready"), on_error=failed)
     loop.run()
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

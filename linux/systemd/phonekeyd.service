@@ -4,6 +4,8 @@ Description=PhoneKey BLE verifier daemon (pre-alpha)
 Documentation=file:/usr/lib/phonekey/README.md
 After=bluetooth.service
 Wants=bluetooth.service
+# Keep retrying at boot until a Bluetooth adapter appears (USB adapters can be late).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
