@@ -52,4 +52,6 @@ before `@include common-auth`, without touching the shared file.
 | 2 | Nothing new (system Python packages) |
 | 3–4 | Nothing: the daemon runs as your user from the repo |
 | 5 | `scripts/install.sh` (creates the `phonekey` user and systemd unit; shown with `--dry-run` and confirmed first) |
-| 5 | also `sudo apt install libpam0g-dev` (to build the PAM module) |
+| 5 | PAM headers to build the module: `sudo apt install libpam0g-dev`, **or** (what was done on the MVP laptop, nothing installed) `apt-get download libpam0g-dev` + `dpkg-deb -x` and `make -C linux/pam PAM_INCLUDE=…` (see `linux/pam/Makefile`) |
+| 6 | Nothing new. Rehearse the text-console recovery (SECURITY.md §9) before `phonekey enable unlock` |
+| 7+ | See [ROADMAP.md](ROADMAP.md) |

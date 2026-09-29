@@ -23,7 +23,7 @@ Android phone (authenticator, BLE peripheral)       Linux Mint laptop (verifier,
 │   (StrongBox → TEE fallback)         │          │ pam_phonekey.so    │  │ phonekey (CLI)   │
 └──────────────────────────────────────┘          │ (C, no crypto, P5) │  └──────────────────┘
                                                   └────────────────────┘
-      Pairing codes are confirmed in Android's dialog and in the desktop's Blueman dialog.
+      Pairing codes are confirmed in Android's dialog and in `phonekey pair` (PhoneKey's own agent, D‑1).
 ```
 
 ### Why these choices
@@ -131,13 +131,16 @@ phonekey/
 
 ## 5. Phase plan
 
-| Phase | Deliverable | Touches system config? |
-|---|---|---|
-| 0 | These documents | No |
-| 1 | Android app: Keystore key, BiometricPrompt, local sign + verify, tests | No |
-| 2 | Linux verifier library + CLI: challenges, registry, verify, replay rejection, codec, test vectors | No (user-local test paths) |
-| 3 | BLE transport: GATT server, agent, pairing, Android GATT client | Installs daemon + systemd unit **after confirmation** |
-| 4 | End-to-end `phonekey test` | No |
-| 5 | `pam_phonekey.so` for `sudo` + `phonekey enable/disable` | Edits `/etc/pam.d/sudo` **after explicit confirmation** |
-| 6 | Screen unlock (`cinnamon-screensaver`) | Edits its PAM file **after confirmation** |
-| 7 | Login (`lightdm`), if practical | Edits its PAM file **after confirmation** |
+The full plan, with acceptance criteria for every phase, is in
+[ROADMAP.md](ROADMAP.md). In short:
+
+| Phases | Status |
+|---|---|
+| 0–6: foundation, Android crypto, Linux verifier, BLE, end-to-end, PAM + sudo, Cinnamon screen unlock | **Complete** |
+| 7–18: reliability, QR-assisted pairing, security hardening, Android UX, packaging, Linux and Android compatibility, multi-device, protocol generalization, proximity research, independent review, public alpha | Planned |
+| 19: Linux login (LightDM) | **Deliberately late** (SECURITY.md D‑17) |
+| 20+: future integrations | Open |
+
+As built, Phase 3 swapped the BLE roles from the Phase 0 plan (the phone is
+the peripheral, D‑11), and the system service was installed in Phase 5, not
+Phase 3. The Phase 0 plan's "Phase 7 — Login" is now Phase 19.

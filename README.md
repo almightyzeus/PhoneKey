@@ -5,9 +5,10 @@ for Linux: approve `sudo` and screen unlock with a fingerprint on your phone,
 over Bluetooth Low Energy. There is no cloud, no internet, and no shared
 password.
 
-> ⚠️ **Status: pre-alpha, Phase 6 of 7.** Pairing, end-to-end authentication
-> over BLE, `sudo` and screen unlock through PAM (each opt-in; the password
-> always still works). Not yet done: login.
+> ⚠️ **Status: pre-alpha. Phases 0–6 of the [roadmap](docs/ROADMAP.md) are
+> complete:** pairing, end-to-end authentication over BLE, `sudo` and screen
+> unlock through PAM (each opt-in; the password always still works). Next:
+> Phase 7, reliability. Linux login is deliberately one of the last phases.
 > PhoneKey is **not production-secure**. Always keep password authentication
 > enabled.
 
@@ -30,7 +31,8 @@ prompt.
 
 - [protocol/PROTOCOL.md](protocol/PROTOCOL.md): the wire protocol (platform-independent)
 - [protocol/SECURITY.md](protocol/SECURITY.md): threat model, security decisions, **recovery procedures**
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): Linux + Android design and phase plan
+- [docs/ROADMAP.md](docs/ROADMAP.md): phases, acceptance criteria, and roadmap decisions
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): Linux + Android design
 - [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md): development environment requirements
 - [android/README.md](android/README.md), [linux/README.md](linux/README.md): build, test, and component notes
 

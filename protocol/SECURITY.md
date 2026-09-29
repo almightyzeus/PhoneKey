@@ -106,8 +106,9 @@ Each threat names the mechanism that defeats it and the tests that show it
   numeric codes, an attacker can pair. Mitigation: pairing requires root and
   opens only a short window.
 - **R‑4 Password-derived secrets.** Logging in with PhoneKey cannot unlock
-  gnome-keyring (and would not unlock an ecryptfs home). Phase 7 documents the
-  impact. The login path may stay password-only.
+  gnome-keyring (and would not unlock an ecryptfs home). Phase 19 (login,
+  deliberately late, D‑17) must decide and document the impact. The login path
+  may stay password-only.
 - **R‑5 App-level UI deception.** A malicious app update could show false text
   before the BiometricPrompt. The signed `AUTH_REQUEST` limits what it could
   sign to real requests from the paired verifier. Supply-chain security of
@@ -152,14 +153,18 @@ Each threat names the mechanism that defeats it and the tests that show it
 | D‑6 | Biometric class | `BIOMETRIC_STRONG` only, no device-credential fallback in the prompt | Face unlock on many phones is Class 1/2 and won't work. After a lockout the user falls back to the laptop password. |
 | D‑7 | Daemon privilege | Runs **unprivileged**. In development it runs as the user from the repo, with no installation and no D-Bus policy file. The system service runs as a dedicated `phonekey` user under a hardened unit (no capabilities, read-only system, only Unix and Bluetooth sockets); BlueZ's stock D-Bus policy already allows it. | Verified on the MVP laptop: LE scanning (BlueZ), bonding through a non-default agent (BlueZ), and the daemon's own L2CAP LE ATT socket all work without privileges. |
 | D‑8 | PAM placement | `auth sufficient pam_phonekey.so action=sudo` added to **one service file** (`/etc/pam.d/sudo` first) before `@include common-auth`, only by `sudo phonekey enable sudo` after it shows the diff and you type `enable`. `common-auth` is never edited. The editor refuses files it does not recognise (not exactly one `@include common-auth`, earlier `auth` rules, not root-owned), backs up the file to `/var/backups/phonekey/`, and replaces it atomically. | Limits the blast radius. Each service is enabled explicitly. |
+| D‑9 | Replay state in memory only | Yes | A restart invalidates in-flight requests, which is the safe direction. |
+| D‑10 | Optional hardening: BlueZ `SecureConnections = only` in `/etc/bluetooth/main.conf` | **Not applied** in the MVP | It would prevent legacy pairing system-wide, which could affect your other BT devices. Changing it needs explicit approval. |
+| D‑11 | BLE roles and link | Phone = peripheral (GATT server, advertises); laptop = central, connecting over **its own L2CAP LE socket** to the phone's ATT channel, with a minimal ATT client (`att.py`) | The laptop's Realtek RTL8822CU rejects all LE advertising. Android derives a classic-Bluetooth bond during LE pairing and its advertisements carry no "BR/EDR not supported" flag, so BlueZ's `Device1.Connect` kept choosing classic Bluetooth (failed reconnects, and it could try audio/phonebook profiles). The socket requires `BT_SECURITY_HIGH` (authenticated, encrypted bond). Roles carry no security meaning. See R‑7. |
+| D‑12 | PAM results and waiting | Approved → success. Denied on the phone → `PAM_AUTH_ERR`. Anything else (no daemon, socket not owned by `phonekey`, no phone connected, timeout, error) → `PAM_AUTHINFO_UNAVAIL`. With `sufficient`, every non-success goes on to the password prompt. The module waits at most 35 s (the daemon's request lives 30 s). | While the phone prompt is open, the password prompt waits. Tap **Deny** on the phone to get it at once. When no phone is connected, the module returns in milliseconds. |
 | D‑13 | What the phone shows for sudo | The daemon reads the command line of the process that connected (SO_PEERCRED pid) when that process is root and named `sudo`/`sudoedit`, shell-quotes it, escapes control/bidi characters, and caps it at 256 bytes with a visible truncation marker. It is sent as the signed `detail` field and shown on the request screen and inside the fingerprint prompt. The `sudo` action is accepted only from root callers. | Clients cannot supply the text, so it cannot be spoofed by an unprivileged program. The command can be visible on the lock screen while a prompt is open. |
 | D‑14 | Starting automatically | **Laptop:** `phonekeyd` is a normal boot service (unprivileged user, hardened unit). If Bluetooth is off or not ready it keeps running and starts scanning when Bluetooth appears; if there is no adapter yet, systemd retries every 5 s. **Phone:** a non-exported receiver starts the service after boot (`BOOT_COMPLETED`, which Android sends only after the first unlock) and after an app update (`MY_PACKAGE_REPLACED`), only if a computer is paired and the Bluetooth permissions are granted. | Starting grants nothing: each approval still needs a fingerprint, and while nothing runs sudo simply asks for the password. The cost: after a reboot the phone advertises the PhoneKey service UUID whenever its laptop is not connected (R‑7), without the app being opened first. |
 | D‑15 | Who may trigger a sudo prompt | Only someone at this computer (`presence.py`). If the `sudo` process is in a logind session, that session must be local, the account's own, and active. Desktop terminals run outside the login session (under `user@UID.service`), so otherwise the process must have a controlling terminal **and** the account must have an active local session on a seat. Any lookup failure refuses. Refused requests never reach the phone: the result is `unavailable`, and sudo asks for the password. | Blocks SSH logins, cron jobs and background services. Not a hard boundary against code already running as the user (R‑8). |
 | D‑16 | Screen unlock | `auth sufficient pam_phonekey.so action=unlock timeout=20` before `@include common-auth` in `/etc/pam.d/cinnamon-screensaver`, only via `sudo phonekey enable unlock`. The lock screen runs PAM as soon as you wake it, so the phone is asked first; the password box appears when you deny, after 20 s, or at once if the phone is not connected. Presence: Cinnamon's PAM helper is a D-Bus-activated user service with no logind session and no terminal, and `LockedHint` is not maintained, so the rule is only that the account has an active local session on a seat. When the lock screen gives up, the daemon withdraws the phone prompt (PROTOCOL.md §8.1 step 8). | The requester cannot be proven to be the lock screen; a program running as you that fakes an unlock request only gets "ok" back and unlocks nothing (R‑9). After a phone unlock, `pam_gnome_keyring` (which follows in the stack) does not run; the keyring normally stays unlocked for the session anyway. |
-| D‑12 | PAM results and waiting | Approved → success. Denied on the phone → `PAM_AUTH_ERR`. Anything else (no daemon, socket not owned by `phonekey`, no phone connected, timeout, error) → `PAM_AUTHINFO_UNAVAIL`. With `sufficient`, every non-success goes on to the password prompt. The module waits at most 35 s (the daemon's request lives 30 s). | While the phone prompt is open, the password prompt waits. Tap **Deny** on the phone to get it at once. When no phone is connected, the module returns in milliseconds. |
-| D‑9 | Replay state in memory only | Yes | A restart invalidates in-flight requests, which is the safe direction. |
-| D‑11 | BLE roles and link | Phone = peripheral (GATT server, advertises); laptop = central, connecting over **its own L2CAP LE socket** to the phone's ATT channel, with a minimal ATT client (`att.py`) | The laptop's Realtek RTL8822CU rejects all LE advertising. Android derives a classic-Bluetooth bond during LE pairing and its advertisements carry no "BR/EDR not supported" flag, so BlueZ's `Device1.Connect` kept choosing classic Bluetooth (failed reconnects, and it could try audio/phonebook profiles). The socket requires `BT_SECURITY_HIGH` (authenticated, encrypted bond). Roles carry no security meaning. See R‑7. |
-| D‑10 | Optional hardening: BlueZ `SecureConnections = only` in `/etc/bluetooth/main.conf` | **Not applied** in the MVP | It would prevent legacy pairing system-wide, which could affect your other BT devices. Changing it needs explicit approval. |
+| D‑17 | When Linux login is integrated | **Last major implementation phase** (Phase 19 in [docs/ROADMAP.md](../docs/ROADMAP.md)), after reliability, pairing, hardening, UX, packaging, compatibility and independent review (decided 2026-09-30). | Login runs during boot and session start, depends on the display manager and start-up ordering, and a mistake can lock the user out of the desktop; it also cannot unlock password-derived secrets (R‑4). Sudo and screen unlock cover the frequent cases with far less risk. |
+| D‑18 | Reliability before new surfaces | Phase 7 (reliability and resilience) comes before any new authentication surface (decided 2026-09-30). | New surfaces multiply failure modes; the existing ones must first be dependable in daily use, with password fallback proven in every failure mode. |
+| D‑19 | QR-assisted pairing | QR pairing **complements** authenticated BLE pairing: the first implementation (Option A) adds QR-based application binding and **keeps** LE Secure Connections numeric comparison (decided 2026-09-30). QR + BLE Just Works (Option B) is a **security-model change** that must not silently replace Option A and needs its own decision. | Option A strictly adds security (it addresses R‑3). Option B would leave the link unprotected against a man-in-the-middle who could read request contents, and it conflicts with the authenticated-bond requirement (PROTOCOL.md §5.1). Android apps cannot use Bluetooth OOB pairing, so a QR code cannot secure the bond itself. |
+| D‑20 | Protocol scope | The protocol stays transport-agnostic and authorizes **an action on a resource** for an account (PROTOCOL.md intro), not "unlock Linux". Linux-specific parts (PAM, action names such as `linux.sudo`) stay in the verifier (decided 2026-09-30). | Keeps future verifiers possible (ROADMAP Phase 15) without building integrations early. |
 
 ## 8. Platform constraints
 
@@ -203,9 +208,10 @@ Each threat names the mechanism that defeats it and the tests that show it
 - `sudo` runs PAM as **root**. `cinnamon-screensaver` runs PAM **as the
   logged-in user**. The daemon socket must therefore be connectable by users,
   and must authorize requests by SO_PEERCRED uid.
-- `cinnamon-screensaver` may only start PAM after a keypress or password
-  submission. How to trigger PhoneKey on the lock screen is an open question
-  for Phase 6.
+- `cinnamon-screensaver` starts PAM as soon as the locked screen is woken (mouse
+  or key), in a helper that is a D-Bus-activated user service with no logind
+  session and no terminal. PhoneKey runs first and the password box appears
+  after it (resolved in Phase 6, D‑16).
 - `lightdm` (slick-greeter) login: PhoneKey cannot provide the password that
   gnome-keyring and ecryptfs need (R‑4).
 - `/etc/pam.d/common-auth` is shared by nearly every service, so PhoneKey
@@ -246,8 +252,8 @@ PhoneKey never touches, so they always accept your password:
    of your desktop session is in `loginctl`, e.g. `c2`). Nothing is printed.
 4. `exit`, then **Ctrl+Alt+F7** (or Fn+F7). The desktop is back, unlocked.
 
-Rehearsed on the MVP laptop before enabling unlock (2026-09-29). Phase 7
-(login) will add its own procedure before it is enabled.
+Rehearsed on the MVP laptop before enabling unlock (2026-09-29). Phase 19
+(login, see docs/ROADMAP.md) will add its own procedure before it is enabled.
 
 ## 10. Rules for contributors
 
