@@ -244,6 +244,31 @@ class PairingOverLinkTest(CoreTestCase):
     def start(self, window=120):
         self.core.start_pairing(ACCOUNT, window, self.events.append)
 
+    def progress(self):
+        return [e["message"] for e in self.events if e.get("event") == "progress"]
+
+    def test_progress_tells_user_to_approve_on_phone(self):
+        self.start()
+        phone = self.connect(SimulatedAuthenticator("New phone"), hello=False)
+        phone.hello()
+        self.assertEqual(1, len(self.progress()))
+        self.assertIn("approve this computer on your phone", self.progress()[0])
+        self.assertEqual("paired", self.events[-1]["result"])
+
+    def test_progress_explains_a_dropped_link_and_keeps_the_window_open(self):
+        self.start()
+        phone = self.connect(SimulatedAuthenticator("New phone"), hello=False)
+        phone.auto_reply = False
+        phone.hello()
+        self.disconnect(phone)
+        self.assertIn("reconnecting", self.progress()[-1])
+        self.assertNotIn("result", self.events[-1])  # still waiting, not failed
+        self.assertTrue(self.transport.pairing_mode)
+
+    def test_progress_outside_pairing_is_ignored(self):
+        self.core.pairing_progress("nobody is listening")
+        self.assertEqual([], self.events)
+
     def test_pairing_flow(self):
         self.start()
         self.assertTrue(self.transport.pairing_mode)

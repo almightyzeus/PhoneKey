@@ -165,6 +165,7 @@ class AuthRequestActivity : AppCompatActivity(), PhoneKeyService.Listener {
         BiometricSigner(this).sign(signature, Labels.AUTH_ASSERTION + prompt.unsignedResponse,
             AuthenticatorCore.describeAction(prompt.action), "${prompt.record.displayName} · ${prompt.account}",
             prompt.detail, // shown in the fingerprint prompt too, which is all you see on the lock screen
+            getString(R.string.auth_deny), // one tap to deny, and the computer asks for the password
         ) { result ->
             prompting = false
             result.fold(
@@ -174,9 +175,12 @@ class AuthRequestActivity : AppCompatActivity(), PhoneKeyService.Listener {
                 },
                 onFailure = { e ->
                     Log.w(TAG, "signature not produced", e)
-                    val cancelled = e is BiometricFailedException && e.errorCode in setOf(
-                        BiometricPrompt.ERROR_NEGATIVE_BUTTON, BiometricPrompt.ERROR_USER_CANCELED)
-                    if (cancelled) {
+                    val denied = e is BiometricFailedException && e.errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON
+                    val cancelled = e is BiometricFailedException && e.errorCode == BiometricPrompt.ERROR_USER_CANCELED
+                    if (denied) {
+                        service.failPrompt(ErrorCode.USER_DENIED)
+                        finish()
+                    } else if (cancelled) { // back gesture / tap outside: keep the request open
                         message.text = "Cancelled. Tap Approve to try again, or Deny."
                     } else if (keyguard.isKeyguardLocked && e is BiometricFailedException &&
                         e.errorCode !in setOf(BiometricPrompt.ERROR_LOCKOUT, BiometricPrompt.ERROR_LOCKOUT_PERMANENT)

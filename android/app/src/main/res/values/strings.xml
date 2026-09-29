@@ -11,9 +11,42 @@
     <string name="auth_approve">Approve with fingerprint</string>
     <string name="auth_deny">Deny</string>
     <string name="auth_unlock">Unlock to review</string>
-    <string name="diagnostics">Diagnostics · local key test</string>
-    <string name="generate_key">Generate test key</string>
-    <string name="sign_challenge">Sign test challenge (biometric)</string>
-    <string name="sign_unauthorized">Try signing without biometric</string>
-    <string name="delete_key">Delete test key</string>
+
+    <!-- Main screen status -->
+    <string name="status_not_running">PhoneKey is not running</string>
+    <string name="hint_not_running">Allow the Bluetooth and notification permissions to start it.</string>
+    <string name="status_bluetooth_off">Bluetooth is off</string>
+    <string name="hint_bluetooth_off">Turn it on so your computer can reach this phone.</string>
+    <string name="status_pairing">Pairing…</string>
+    <string name="hint_pairing">Follow the steps on the pairing screen.</string>
+    <string name="status_connected">Connected to %1$s</string>
+    <string name="hint_connected">Requests from your computer appear here and on the lock screen. Approve with your fingerprint.</string>
+    <string name="status_waiting">Waiting for %1$s…</string>
+    <string name="hint_waiting">Make sure the computer is on and its Bluetooth is enabled. It usually reconnects within a minute.</string>
+    <string name="status_unpaired">No computer paired yet</string>
+    <string name="hint_unpaired">Run \'sudo phonekey pair\' on your computer, then tap Add computer.</string>
+
+    <!-- Paired computers -->
+    <string name="no_computers">No computers paired yet.</string>
+    <string name="computer_row">%1$s · %2$s\nAccount %3$s · key %4$s</string>
+    <string name="state_connected">Connected</string>
+    <string name="state_not_connected">Not connected</string>
+    <string name="remove">Remove</string>
+    <string name="remove_confirm">Tap again to remove</string>
+    <string name="removed">Removed %1$s. On the computer, also run \'sudo phonekey unpair\'.</string>
+
+    <!-- Short summary of this phone\'s security features -->
+    <string name="device_summary">This phone: fingerprint %1$s · keys in %2$s</string>
+    <string name="fingerprint_ready">ready</string>
+    <string name="fingerprint_none_enrolled">not set up</string>
+    <string name="fingerprint_unavailable">unavailable</string>
+    <string name="keys_strongbox">StrongBox (if available) or the secure area (TEE)</string>
+    <string name="keys_tee">the secure area (TEE)</string>
+
+    <!-- Persistent notification -->
+    <string name="notify_bluetooth_off">Bluetooth is off</string>
+    <string name="notify_pairing">Pairing…</string>
+    <string name="notify_connected">Connected to %1$s</string>
+    <string name="notify_waiting">Waiting for %1$s</string>
+    <string name="notify_unpaired">No computer paired</string>
 </resources>

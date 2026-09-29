@@ -60,6 +60,7 @@ class _PairingJob:
     on_event: EventSink
     timer: object
     confirm: Callable[[bool], None] | None = None
+    asked: str | None = None  # peer we sent PAIR_REQUEST to (for progress messages)
 
 
 class DaemonCore:
@@ -143,6 +144,9 @@ class DaemonCore:
             self._on_message(peer_id, peer, message)
 
     def on_disconnect(self, peer_id: str) -> None:
+        if self._pairing is not None and self._pairing.asked == peer_id:
+            self._pairing.asked = None
+            self.pairing_progress("The Bluetooth link dropped; reconnecting. Keep both screens open…")
         peer = self._peers.pop(peer_id, None)
         if peer is not None:
             self._cancel_hello(peer)
@@ -183,6 +187,11 @@ class DaemonCore:
         if self._pairing is not None and self._pairing.confirm is not None:
             reply, self._pairing.confirm = self._pairing.confirm, None
             reply(bool(accepted))
+
+    def pairing_progress(self, message: str) -> None:
+        """Tells the waiting `phonekey pair` what is happening (no effect outside pairing)."""
+        if self._pairing is not None:
+            self._pairing.on_event({"event": "progress", "message": message})
 
     def cancel_pairing(self) -> None:
         if self._pairing is not None:
@@ -261,6 +270,8 @@ class DaemonCore:
             return
         if self._pairing is not None:
             log.info("sending PAIR_REQUEST to %s", peer_id)
+            self._pairing.asked = peer_id
+            self.pairing_progress("Connected. Now approve this computer on your phone (fingerprint).")
             self._send(self._pairing.request, peer_id)  # a phone in pairing mode is asking
         else:
             log.info("ignoring STATUS without ids: no pairing window open")

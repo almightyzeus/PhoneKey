@@ -112,7 +112,7 @@ class PamModuleTest(unittest.TestCase):
         self.serve(lines({"event": "sent", "device": "phone"}, {"result": "ok"}))
         code, out, _ = self.run_stack()
         self.assertEqual(code, 0, out)
-        self.assertIn("confirm on your phone", out)
+        self.assertIn("approve on your phone", out)
         self.assertEqual(json.loads(self.daemon.requests[0]),
                          {"op": "auth", "action": "sudo", "account": USER})
 
@@ -131,7 +131,7 @@ class PamModuleTest(unittest.TestCase):
         self.serve(lines({"result": "unavailable", "reason": "no paired phone connected"}))
         code, out, elapsed = self.run_stack()
         self.assertEqual(code, 1)
-        self.assertNotIn("confirm on your phone", out)
+        self.assertNotIn("approve on your phone", out)
         self.assertLess(elapsed, 2)
 
     def test_error_result(self):

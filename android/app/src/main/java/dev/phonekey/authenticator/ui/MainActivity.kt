@@ -9,7 +9,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -20,25 +19,26 @@ import androidx.biometric.BiometricManager
 import dev.phonekey.authenticator.R
 import dev.phonekey.authenticator.biometric.BiometricSigner
 import dev.phonekey.authenticator.ble.PhoneKeyService
-import dev.phonekey.authenticator.crypto.Challenges
 import dev.phonekey.authenticator.crypto.DeviceKeyStore
-import dev.phonekey.authenticator.crypto.SignatureVerifier
 import dev.phonekey.authenticator.crypto.fingerprint
 import dev.phonekey.authenticator.crypto.toHex
+import dev.phonekey.authenticator.protocol.VerifierRecord
 import dev.phonekey.authenticator.store.VerifierStore
 
-/** Status, paired computers, and the Phase 1 key diagnostics. */
+/** Status, paired computers, and a one-line summary of the phone's security features. */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var keys: DeviceKeyStore
-    private lateinit var signer: BiometricSigner
     private lateinit var statusText: TextView
+    private lateinit var statusHint: TextView
     private lateinit var pairedList: LinearLayout
     private lateinit var fullScreenButton: Button
     private lateinit var bluetoothButton: Button
+    private lateinit var messageText: TextView
     private lateinit var deviceText: TextView
-    private lateinit var outputText: TextView
+    private var armedRemoval: String? = null // verifier id hex awaiting the second tap
     private val handler = Handler(Looper.getMainLooper())
+    private val disarm = Runnable { armedRemoval = null; refresh() }
     private val refresher = object : Runnable {
         override fun run() {
             refresh()
@@ -59,17 +59,17 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         keys = DeviceKeyStore(this)
-        signer = BiometricSigner(this)
+        keys.deleteKey(OLD_TEST_ALIAS) // left over from the Phase 1 diagnostics
         statusText = findViewById(R.id.status_text)
+        statusHint = findViewById(R.id.status_hint)
         pairedList = findViewById(R.id.paired_list)
+        messageText = findViewById(R.id.message_text)
+        deviceText = findViewById(R.id.device_text)
         fullScreenButton = findViewById(R.id.full_screen_button)
         bluetoothButton = findViewById(R.id.bluetooth_button)
         bluetoothButton.setOnClickListener {
             startActivity(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
         }
-        deviceText = findViewById(R.id.device_text)
-        outputText = findViewById(R.id.output_text)
-
         findViewById<Button>(R.id.add_computer_button).setOnClickListener {
             startActivity(Intent(this, PairingActivity::class.java))
         }
@@ -79,13 +79,7 @@ class MainActivity : AppCompatActivity() {
                     android.net.Uri.parse("package:$packageName")))
             }
         }
-        findViewById<Button>(R.id.generate_button).setOnClickListener { generateKey() }
-        findViewById<Button>(R.id.sign_button).setOnClickListener { signTestChallenge() }
-        findViewById<Button>(R.id.sign_unauthorized_button).setOnClickListener { signWithoutBiometric() }
-        findViewById<Button>(R.id.delete_button).setOnClickListener {
-            keys.deleteKey(TEST_ALIAS)
-            show("Test key deleted.")
-        }
+        deviceText.text = deviceSummary()
 
         if (permissions.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
             startServiceIfAllowed()
@@ -101,6 +95,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         handler.removeCallbacks(refresher)
+        handler.removeCallbacks(disarm)
+        armedRemoval = null
         super.onPause()
     }
 
@@ -113,128 +109,84 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         val service = PhoneKeyService.instance
+        val records = VerifierStore(this).all()
         val connected = service?.connectedVerifiers()?.map { it.verifierId.toHex() }?.toSet() ?: emptySet()
         val bluetoothOn = getSystemService(android.bluetooth.BluetoothManager::class.java).adapter?.isEnabled == true
         bluetoothButton.visibility = if (bluetoothOn) View.GONE else View.VISIBLE
-        statusText.text = when {
-            service == null -> "● PhoneKey is not running — Bluetooth permissions are needed."
-            !bluetoothOn -> "● Bluetooth is off. Turn it on to use PhoneKey."
-            service.pairingMode -> "● Pairing mode"
-            connected.isNotEmpty() -> "● Connected"
-            service.isAdvertising -> "○ Waiting for your computer"
-            else -> "○ Ready (no computer paired)"
+
+        val connectedNames = records.filter { it.verifierId.toHex() in connected }.joinToString { it.displayName }
+        val (status, hint) = when {
+            service == null -> getString(R.string.status_not_running) to getString(R.string.hint_not_running)
+            !bluetoothOn -> getString(R.string.status_bluetooth_off) to getString(R.string.hint_bluetooth_off)
+            service.pairingMode -> getString(R.string.status_pairing) to getString(R.string.hint_pairing)
+            connectedNames.isNotEmpty() ->
+                getString(R.string.status_connected, connectedNames) to getString(R.string.hint_connected)
+            records.isNotEmpty() -> getString(R.string.status_waiting, records.joinToString { it.displayName }) to
+                getString(R.string.hint_waiting)
+            else -> getString(R.string.status_unpaired) to getString(R.string.hint_unpaired)
         }
+        statusText.text = status
+        statusHint.text = hint
 
         pairedList.removeAllViews()
-        val records = VerifierStore(this).all()
         if (records.isEmpty()) {
-            pairedList.addView(TextView(this).apply { text = "No computers paired yet." })
+            pairedList.addView(TextView(this).apply { text = getString(R.string.no_computers) })
         }
-        for (record in records) {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            row.addView(TextView(this).apply {
-                val state = if (record.verifierId.toHex() in connected) "connected" else "not connected"
-                text = "${record.displayName} (${record.account})\n${record.verifierId.fingerprint()} · $state"
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            })
-            row.addView(Button(this).apply {
-                text = "Remove"
-                setOnClickListener {
-                    service?.removeVerifier(record)
-                        ?: run { VerifierStore(this@MainActivity).remove(record.verifierId); keys.deleteKey(record.keyAlias) }
-                    show("Removed ${record.displayName}. Also run `phonekey unpair` on the computer and forget " +
-                        "the computer in Android Bluetooth settings.")
-                    refresh()
-                }
-            })
-            pairedList.addView(row)
-        }
+        for (record in records) pairedList.addView(row(record, record.verifierId.toHex() in connected))
 
         // Android 14+ lets the user revoke full-screen prompts; on 13 they are granted at install.
         val canFullScreen = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
             getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
         fullScreenButton.visibility = if (canFullScreen) View.GONE else View.VISIBLE
-        refreshDeviceReport()
     }
 
-    // ---- diagnostics (Phase 1 local crypto test) -----------------------------------
-
-    private fun refreshDeviceReport() {
-        val biometric = when (signer.canAuthenticate()) {
-            BiometricManager.BIOMETRIC_SUCCESS -> "available"
-            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "none enrolled"
-            BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "no Class 3 hardware"
-            else -> "unavailable"
+    private fun row(record: VerifierRecord, isConnected: Boolean): View {
+        val id = record.verifierId.toHex()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 12, 0, 12)
         }
-        val key = if (keys.hasKey(TEST_ALIAS)) {
-            "${keys.securityOf(TEST_ALIAS)} · ${SignatureVerifier.keyId(keys.publicKeySpki(TEST_ALIAS)).fingerprint()}"
-        } else {
-            "none"
-        }
-        deviceText.text = """
-            Device: ${Build.MANUFACTURER} ${Build.MODEL}
-            Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})
-            StrongBox feature: ${if (keys.hasStrongBox()) "yes" else "no"}
-            Class 3 biometric: $biometric
-            Test key: $key
-        """.trimIndent()
+        row.addView(TextView(this).apply {
+            val state = getString(if (isConnected) R.string.state_connected else R.string.state_not_connected)
+            text = getString(R.string.computer_row, record.displayName, state, record.account,
+                record.verifierId.fingerprint())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        row.addView(Button(this).apply {
+            text = getString(if (armedRemoval == id) R.string.remove_confirm else R.string.remove)
+            setOnClickListener {
+                if (armedRemoval != id) { // first tap: ask to confirm, for 4 seconds
+                    armedRemoval = id
+                    handler.removeCallbacks(disarm)
+                    handler.postDelayed(disarm, 4_000)
+                } else {
+                    armedRemoval = null
+                    handler.removeCallbacks(disarm)
+                    remove(record)
+                }
+                refresh()
+            }
+        })
+        return row
     }
 
-    private fun generateKey() {
-        try {
-            val generated = keys.generate(TEST_ALIAS, attestationChallenge = Challenges.newChallenge())
-            val attestation = generated.attestationChain?.let { "${it.size} certificates (informational)" }
-                ?: "not available (informational)"
-            show("Generated key in ${generated.security}.\nAttestation: $attestation")
-        } catch (e: Exception) {
-            show("Key generation failed: ${e.javaClass.simpleName}: ${e.message}")
-        }
-        refreshDeviceReport()
+    private fun remove(record: VerifierRecord) {
+        PhoneKeyService.instance?.removeVerifier(record)
+            ?: run { VerifierStore(this).remove(record.verifierId); keys.deleteKey(record.keyAlias) }
+        messageText.text = getString(R.string.removed, record.displayName)
     }
 
-    private fun signTestChallenge() {
-        if (!keys.hasKey(TEST_ALIAS)) return show("Generate a key first.")
-        val challenge = Challenges.newChallenge()
-        val signature = try {
-            keys.signatureFor(TEST_ALIAS)
-        } catch (e: KeyPermanentlyInvalidatedException) {
-            return show("Key was invalidated (biometric enrollment changed). Generate a new key.")
-        }
-        signer.sign(signature, challenge, "PhoneKey test", "Sign a local test challenge") { result ->
-            result.fold(
-                onSuccess = { sig ->
-                    val publicKey = SignatureVerifier.publicKeyFromSpki(keys.publicKeySpki(TEST_ALIAS))
-                    val badChallenge = challenge.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
-                    val badSig = sig.copyOf().also { it[it.size - 1] = (it[it.size - 1].toInt() xor 1).toByte() }
-                    show("""
-                        ${mark(SignatureVerifier.verify(publicKey, challenge, sig))} valid signature verifies
-                        ${mark(!SignatureVerifier.verify(publicKey, badChallenge, sig))} modified challenge rejected
-                        ${mark(!SignatureVerifier.verify(publicKey, challenge, badSig))} modified signature rejected
-                    """.trimIndent())
-                },
-                onFailure = { e -> show("Not signed: ${e.message}") },
-            )
-        }
+    private fun deviceSummary(): String {
+        val fingerprint = getString(when (BiometricSigner(this).canAuthenticate()) {
+            BiometricManager.BIOMETRIC_SUCCESS -> R.string.fingerprint_ready
+            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> R.string.fingerprint_none_enrolled
+            else -> R.string.fingerprint_unavailable
+        })
+        val storage = getString(if (keys.hasStrongBox()) R.string.keys_strongbox else R.string.keys_tee)
+        return getString(R.string.device_summary, fingerprint, storage)
     }
 
-    private fun signWithoutBiometric() {
-        if (!keys.hasKey(TEST_ALIAS)) return show("Generate a key first.")
-        val outcome = runCatching {
-            keys.signatureFor(TEST_ALIAS).run { update(Challenges.newChallenge()); sign() }
-        }
-        show(outcome.fold(
-            onSuccess = { "✗ UNEXPECTED: Keystore signed without a biometric!" },
-            onFailure = { "✓ Keystore refused to sign without a biometric (${it.javaClass.simpleName})." },
-        ))
-    }
-
-    private fun mark(ok: Boolean) = if (ok) "✓" else "✗"
-
-    private fun show(message: String) {
-        outputText.text = message
-    }
-
-    companion object {
-        const val TEST_ALIAS = "phonekey.phase1-test"
+    private companion object {
+        const val OLD_TEST_ALIAS = "phonekey.phase1-test"
     }
 }

@@ -144,6 +144,7 @@ class PhoneKeyService : Service() {
                 BluetoothAdapter.STATE_ON -> openServer()
                 BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> closeServer()
             }
+            updateNotification() // "Bluetooth is off" / back to connected or waiting
         }
     }
 
@@ -567,10 +568,14 @@ class PhoneKeyService : Service() {
 
     private fun serviceNotification(): Notification {
         val connected = if (::store.isInitialized) connectedVerifiers() else emptyList()
+        val paired = if (::store.isInitialized) store.all() else emptyList()
+        val bluetoothOn = getSystemService(BluetoothManager::class.java).adapter?.isEnabled == true
         val text = when {
-            pairingMode -> "Pairing mode"
-            connected.isNotEmpty() -> "Connected to ${connected.joinToString { it.displayName }}"
-            else -> "Ready"
+            !bluetoothOn -> getString(R.string.notify_bluetooth_off)
+            pairingMode -> getString(R.string.notify_pairing)
+            connected.isNotEmpty() -> getString(R.string.notify_connected, connected.joinToString { it.displayName })
+            paired.isNotEmpty() -> getString(R.string.notify_waiting, paired.joinToString { it.displayName })
+            else -> getString(R.string.notify_unpaired)
         }
         val open = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE)

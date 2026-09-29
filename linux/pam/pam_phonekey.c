@@ -274,7 +274,7 @@ EXPORT int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const ch
                 break;
             }
             if (json_string(reply, "event", value, sizeof(value)) == 0 && strcmp(value, "sent") == 0)
-                info(pamh, flags, "PhoneKey: confirm on your phone (or tap Deny there to type your password).");
+                info(pamh, flags, "PhoneKey: approve on your phone, or tap Deny to use your password.");
             size_t consumed = (size_t)(newline - reply) + 1;
             memmove(reply, newline + 1, used - consumed);
             used -= consumed;

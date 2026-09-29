@@ -374,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
     transport = _Transport()
     core = DaemonCore(verifier, transport, GLibScheduler())
     transport.central = BleCentral(bus, adapter, core.on_connect, core.on_frame, core.on_disconnect,
-                                   core.on_bond_confirmation)
+                                   core.on_bond_confirmation, core.pairing_progress)
     ipc = IpcServer(args.socket, core, system_mode=args.system, hostname=hostname,
                     presence_check=presence.checker(presence.Logind(bus)))
     loop = GLib.MainLoop()

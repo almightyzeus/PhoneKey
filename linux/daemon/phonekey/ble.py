@@ -174,7 +174,8 @@ class BleCentral:
                  on_connect: Callable[[str, int | None], None],
                  on_frame: Callable[[str, bytes, int | None], None],
                  on_disconnect: Callable[[str], None],
-                 on_confirm: Confirm):
+                 on_confirm: Confirm,
+                 on_progress: Callable[[str], None] = lambda message: None):
         from gi.repository import GLib
 
         self._glib = GLib
@@ -182,6 +183,7 @@ class BleCentral:
         self._adapter_path = adapter_path
         self._adapter = dbus.Interface(bus.get_object(BLUEZ, adapter_path), ADAPTER)
         self._on_connect, self._on_frame, self._on_disconnect = on_connect, on_frame, on_disconnect
+        self._on_progress = on_progress  # pairing-window messages for the user
         self._links: dict[str, _Link] = {}
         self._cooldown: dict[str, float] = {}
         self._pairing = False
@@ -337,6 +339,7 @@ class BleCentral:
     def _bond(self, path: str) -> None:
         """Bonds via BlueZ (numeric comparison through our agent), then reconnects over our own socket."""
         log.info("bonding with %s: confirm the code in the terminal and on the phone", path)
+        self._on_progress("Phone found. Starting Bluetooth pairing…")
 
         def reopen():
             if path in self._links:
@@ -345,14 +348,17 @@ class BleCentral:
 
         def bonded():
             log.info("bonded with %s", path)
+            self._on_progress("Bluetooth pairing done. Connecting to PhoneKey on the phone…")
             # BlueZ's link carries BlueZ's own ATT client; replace it with ours.
             self._device(path).Disconnect(reply_handler=lambda: self._glib.timeout_add(500, reopen),
                                           error_handler=lambda e: self._glib.timeout_add(500, reopen))
 
+        def bond_failed(e):
+            self._on_progress("Bluetooth pairing did not complete; trying again when the phone is seen.")
+            self._fail(path, f"bonding failed: {e}")
+
         def connected():
-            self._device(path).Pair(reply_handler=bonded,
-                                    error_handler=lambda e: self._fail(path, f"bonding failed: {e}"),
-                                    timeout=90)
+            self._device(path).Pair(reply_handler=bonded, error_handler=bond_failed, timeout=90)
 
         # An unbonded phone advertises from a random address, so BlueZ connects over LE.
         self._device(path).Connect(reply_handler=connected,

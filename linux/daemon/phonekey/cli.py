@@ -181,6 +181,8 @@ def cmd_pair(args: argparse.Namespace) -> int:
                 print(f"Pairing mode is open for {int(event['window'])} seconds.")
                 print("On your phone: open PhoneKey → Add computer.")
                 print("Waiting for the phone... (Ctrl-C to cancel)")
+            elif event.get("event") == "progress":
+                print(f"  … {event['message']}")
             elif event.get("event") == "confirm":
                 code = event["passkey"]
                 print()
@@ -284,7 +286,7 @@ def forge_response(request: bytes, device_id: bytes) -> bytes:
 EFFECT = {
     "sudo": "Effect: sudo first asks your phone; if the phone is not connected, you deny, or it does\n"
             "not answer, sudo asks for your password as before. No other PAM file is changed.",
-    "unlock": "Effect: waking the locked screen first asks your phone (\"PhoneKey: confirm on your\n"
+    "unlock": "Effect: waking the locked screen first asks your phone (\"PhoneKey: approve on your\n"
               "phone\"). If the phone is not connected the password box appears at once; if you deny,\n"
               "or it does not answer within {timeout} s, the password box appears. No other PAM file is changed.",
 }

@@ -109,7 +109,7 @@ pkexec phonekey disable               # the same, if sudo itself misbehaves
 before `@include common-auth`. Nothing else changes, and a copy of the file goes
 to `/var/backups/phonekey/`. Then:
 
-- **Phone connected:** sudo prints *PhoneKey: confirm on your phone*, and a
+- **Phone connected:** sudo prints *PhoneKey: approve on your phone, or tap Deny to use your password*, and a
   fingerprint approves.
 - **You tap Deny, or the phone does not answer within 35 s:** you get the
   usual password prompt.
@@ -132,7 +132,7 @@ sudo phonekey enable unlock             # same, then asks you to type "enable"
 
 This adds `auth sufficient pam_phonekey.so action=unlock timeout=20` before
 `@include common-auth` in `/etc/pam.d/cinnamon-screensaver`. When you wake the
-locked screen it shows *PhoneKey: confirm on your phone*, and a fingerprint
+locked screen it shows *PhoneKey: approve on your phone, or tap Deny to use your password*, and a fingerprint
 unlocks. The password box appears when you tap Deny, after 20 s, or straight
 away if the phone is not connected. If the lock screen gives up waiting, the
 phone prompt is withdrawn. Recovery without the lock screen (text console,
