@@ -19,8 +19,9 @@ import stat
 import struct
 import sys
 from pathlib import Path
+from typing import Callable
 
-from . import command, crypto
+from . import command, crypto, presence
 from .core import DaemonCore, Event
 from .paths import default_socket_path, default_state_dir
 from .registry import Registry
@@ -33,6 +34,8 @@ CLIENT_IDLE_TIMEOUT = 10  # seconds to send a request after connecting
 PAIRING_WINDOW = 120.0
 # The phone displays these; clients pick one, they cannot supply free text.
 ACTIONS = {"test": "phonekey.test", "sudo": "linux.sudo", "unlock": "linux.unlock", "login": "linux.login"}
+# Actions that reach the phone only for someone at this computer (presence.py, SECURITY.md D-15).
+LOCAL_ONLY = {"linux.sudo"}
 
 
 def peer_cred(sock: socket.socket) -> tuple[int, int]:
@@ -165,8 +168,10 @@ class Client:
 
 
 class IpcServer:
-    def __init__(self, path: Path, core: DaemonCore, *, system_mode: bool, hostname: str):
+    def __init__(self, path: Path, core: DaemonCore, *, system_mode: bool, hostname: str,
+                 presence_check: Callable[[int, str], str | None]):
         self.path, self.core, self.system_mode, self.hostname = path, core, system_mode, hostname
+        self.presence_check = presence_check
         self.daemon_uid = os.getuid()
         self.sock: socket.socket | None = None
 
@@ -235,6 +240,12 @@ class IpcServer:
             if action is None:
                 client.send({"result": "error", "reason": "unknown action"}, final=True)
                 return
+            if action in LOCAL_ONLY:
+                reason = self.presence_check(client.pid, account)
+                if reason is not None:
+                    log.info("auth request not sent to the phone: %s (%s)", action, reason)
+                    client.send({"result": "unavailable", "reason": f"not local: {reason}"}, final=True)
+                    return
             # The phone shows the sudo command; read by us from the caller's process, never sent by it.
             detail = command.sudo_command(client.pid) if action == "linux.sudo" and client.uid == 0 else None
             log.info("auth request: account=%s action=%s%s", account, action, " (with command)" if detail else "")
@@ -321,7 +332,8 @@ def main(argv: list[str] | None = None) -> int:
     core = DaemonCore(verifier, transport, GLibScheduler())
     transport.central = BleCentral(bus, adapter, core.on_connect, core.on_frame, core.on_disconnect,
                                    core.on_bond_confirmation)
-    ipc = IpcServer(args.socket, core, system_mode=args.system, hostname=hostname)
+    ipc = IpcServer(args.socket, core, system_mode=args.system, hostname=hostname,
+                    presence_check=presence.checker(presence.Logind(bus)))
     loop = GLib.MainLoop()
     log.info("verifier %s (%s), state %s", verifier.verifier_id[:4].hex(), hostname, args.state_dir)
 

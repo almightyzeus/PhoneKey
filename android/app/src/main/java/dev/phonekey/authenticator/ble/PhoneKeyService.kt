@@ -28,6 +28,7 @@ import android.content.pm.ServiceInfo
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Log
 import dev.phonekey.authenticator.R
 import dev.phonekey.authenticator.crypto.DeviceKeyStore
@@ -39,6 +40,7 @@ import dev.phonekey.authenticator.protocol.ErrorCode
 import dev.phonekey.authenticator.protocol.Framing
 import dev.phonekey.authenticator.protocol.MsgType
 import dev.phonekey.authenticator.protocol.PairOffer
+import dev.phonekey.authenticator.protocol.PromptGate
 import dev.phonekey.authenticator.protocol.ProtocolException
 import dev.phonekey.authenticator.protocol.Reassembler
 import dev.phonekey.authenticator.protocol.StatusCode
@@ -90,7 +92,7 @@ class PhoneKeyService : Service() {
     private var advertiseCallback: AdvertiseCallback? = null
     private var advertisingPairing = false
     private var msgNo = 0
-    private val rateLog = mutableMapOf<String, ArrayDeque<Long>>()
+    private val promptGate = PromptGate(SystemClock::elapsedRealtime)
     private var pendingPairing: PendingPairing? = null
     private val pairingTimeout = Runnable { finishPairing(false, "Pairing timed out") }
 
@@ -312,10 +314,9 @@ class PhoneKeyService : Service() {
             is AuthDecision.Reply -> send(link, decision.message)
             AuthDecision.Ignore -> Unit
             is AuthDecision.Prompt -> {
-                if (activePrompt != null) {
-                    send(link, AuthenticatorCore.error(ErrorCode.BUSY, decision.requestId))
-                } else if (!allowRate(decision.record)) {
-                    send(link, AuthenticatorCore.error(ErrorCode.RATE_LIMITED, decision.requestId))
+                val refusal = promptGate.admit(decision.record.verifierId.toHex(), activePrompt != null)
+                if (refusal != null) {
+                    send(link, AuthenticatorCore.error(refusal, decision.requestId))
                 } else {
                     val expiry = Runnable { endPrompt() }
                     activePrompt = PromptSession(link.device.address, decision, expiry)
@@ -324,15 +325,6 @@ class PhoneKeyService : Service() {
                 }
             }
         }
-    }
-
-    private fun allowRate(record: VerifierRecord): Boolean {
-        val now = System.currentTimeMillis()
-        val log = rateLog.getOrPut(record.verifierId.toHex()) { ArrayDeque() }
-        while (log.isNotEmpty() && now - log.first() > RATE_WINDOW_MS) log.removeFirst()
-        if (log.size >= RATE_LIMIT) return false
-        log.addLast(now)
-        return true
     }
 
     private fun send(link: Link, message: ByteArray) {
@@ -596,8 +588,6 @@ class PhoneKeyService : Service() {
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         const val PAIRING_WINDOW_MS = 120_000L
         private const val PAIRING_ANNOUNCE_MS = 5_000L
-        private const val RATE_LIMIT = 5
-        private const val RATE_WINDOW_MS = 60_000L
         private const val CHANNEL_SERVICE = "status"
         private const val CHANNEL_PROMPT = "auth"
         private const val NOTIFICATION_SERVICE_ID = 1

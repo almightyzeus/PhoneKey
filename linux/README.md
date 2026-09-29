@@ -27,6 +27,7 @@ linux/daemon/phonekey/      Python package
   paths.py                  development vs system locations
   pamconfig.py              the one-line edit behind `phonekey enable/disable`
   command.py                the sudo command line shown on the phone
+  presence.py               sudo prompts only for someone at this computer (logind)
 linux/cli/phonekey          development launcher for the CLI
 linux/cli/phonekeyd         development launcher for the daemon
 linux/systemd/              system service unit (installed by scripts/install.sh)
@@ -117,7 +118,9 @@ to `/var/backups/phonekey/`. Then:
 
 The phone shows the exact command, for example `sudo apt upgrade`. The daemon
 reads it from the waiting sudo process itself, and the text is signed (`command.py`,
-SECURITY.md D‑13). Approving is equivalent to typing your password for that
+SECURITY.md D‑13). Only sudo run by someone at this computer reaches the phone:
+over SSH, from cron or from a background service you get the password prompt
+(`presence.py`, SECURITY.md D‑15). Approving is equivalent to typing your password for that
 command. Deny prompts you did not start (SECURITY.md R‑8). The recovery procedures are in SECURITY.md §9.
 
 ### The PAM module
@@ -158,6 +161,7 @@ PHONEKEY_PAM_SANITIZE=1 scripts/linux-tests.sh                     # PAM module 
 | PAM module through real libpam, against a fake daemon (skipped without PAM headers) | `tests/linux/test_pam.py` |
 | PAM file edit: placement, exact removal, refusals, backups | `tests/linux/test_pamconfig.py` |
 | Command shown for sudo: quoting, escaping, visible truncation | `tests/linux/test_command.py` |
+| Local presence for sudo: SSH, cron/services, other users | `tests/linux/test_presence.py` |
 | Registry: persistence, permissions, tamper detection | `tests/linux/test_registry.py` |
 | CLI | `tests/linux/test_cli.py` |
 

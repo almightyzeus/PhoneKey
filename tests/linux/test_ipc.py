@@ -4,7 +4,7 @@ import os
 import pwd
 import unittest
 
-from phonekey.daemon import ACTIONS, authorize, pairable_account
+from phonekey.daemon import ACTIONS, LOCAL_ONLY, authorize, pairable_account
 
 ME = os.getuid()
 MY_NAME = pwd.getpwuid(ME).pw_name
@@ -61,6 +61,9 @@ class AuthorizeTest(unittest.TestCase):
 
     def test_unknown_operation_refused(self):
         self.assertIsNotNone(check("unpair", 0, system_mode=True))
+
+    def test_sudo_needs_local_presence(self):
+        self.assertIn("linux.sudo", LOCAL_ONLY)
 
     def test_actions_are_a_fixed_set(self):
         self.assertEqual({"phonekey.test", "linux.sudo", "linux.unlock", "linux.login"}, set(ACTIONS.values()))
