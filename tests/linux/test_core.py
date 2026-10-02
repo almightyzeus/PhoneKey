@@ -24,6 +24,8 @@ class FakeScheduler:
 
     def fire_all(self):
         for handle, (_, callback) in list(self.timers.items()):
+            if handle not in self.timers:  # cancelled by an earlier callback in this round
+                continue
             del self.timers[handle]
             callback()
 

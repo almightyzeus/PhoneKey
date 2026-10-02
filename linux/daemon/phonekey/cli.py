@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import re
 import os
 import socket
 import sys
@@ -391,6 +392,113 @@ def cmd_disable(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_text(argv: list[str]) -> str | None:
+    import subprocess
+
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout if out.returncode == 0 else None
+
+
+def adapter_facts() -> list[dict]:
+    """Read-only BlueZ query: every adapter with Powered and Discovering."""
+    try:
+        import dbus
+
+        manager = dbus.Interface(dbus.SystemBus().get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
+        return [{"name": str(path).rsplit("/", 1)[-1], "powered": bool(ifaces["org.bluez.Adapter1"].get("Powered")),
+                 "discovering": bool(ifaces["org.bluez.Adapter1"].get("Discovering"))}
+                for path, ifaces in manager.GetManagedObjects().items() if "org.bluez.Adapter1" in ifaces]
+    except Exception:
+        return []
+
+
+# One kernel line per HCI command the Bluetooth controller did not answer (SECURITY.md §8.2).
+CONTROLLER_TIMEOUT = re.compile(r"Bluetooth: hci\d+: Opcode 0x[0-9a-f]{4} failed: -110")
+
+
+def controller_timeouts(kernel_log: str) -> tuple[int, str | None]:
+    """(count, timestamp of the last one) from `journalctl -k -o short-iso` output."""
+    hits = [line for line in kernel_log.splitlines() if CONTROLLER_TIMEOUT.search(line)]
+    return len(hits), (hits[-1].split(" ", 1)[0] if hits else None)
+
+
+def diagnose(facts: dict) -> list[str]:
+    """Plain-language hints from the collected facts (pure, for tests)."""
+    hints = []
+    if facts.get("service") not in (None, "active"):
+        hints.append("The PhoneKey service is not running: sudo systemctl start phonekeyd "
+                     "(sudo and unlock use the password meanwhile).")
+    adapters = facts.get("adapters", [])
+    if not adapters:
+        hints.append("No Bluetooth adapter found by BlueZ.")
+    elif not any(a["powered"] for a in adapters):
+        hints.append("Bluetooth is off on this computer.")
+    if facts.get("controller_stuck", 0) > 0:
+        hints.append(f"The Bluetooth adapter did not answer {facts['controller_stuck']} command(s) since the "
+                     f"service started, the last at {facts.get('controller_stuck_last')}. If that is after your "
+                     "last adapter reset, other Bluetooth devices may fail to reconnect: unplug and replug the "
+                     "adapter (or toggle Bluetooth), and report it.")
+    paired = facts.get("paired", [])
+    if paired and not any(d["connected"] for d in paired):
+        hints.append("The phone is not connected: check that its Bluetooth is on and PhoneKey shows "
+                     "'Waiting for …'. Reconnecting can take up to ~2 minutes; trying sudo makes it look at once.")
+    if paired and all(d["connected"] for d in paired) and any(a["discovering"] for a in adapters):
+        hints.append("Scanning is on although every phone is connected (another app may be scanning, "
+                     "e.g. the Bluetooth settings window).")
+    if facts.get("daemon_warnings"):
+        hints.append("The service logged warnings; see below.")
+    return hints
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Read-only report for troubleshooting and for recording reliability tests (docs/RELIABILITY.md)."""
+    import datetime
+
+    facts: dict = {}
+    show = _run_text(["systemctl", "show", "phonekeyd", "--property=ActiveState",
+                      "--property=ActiveEnterTimestamp", "--property=NRestarts"]) or ""
+    props = dict(line.split("=", 1) for line in show.splitlines() if "=" in line)
+    facts["service"] = props.get("ActiveState") or None
+    since = props.get("ActiveEnterTimestamp") or ""
+    daemon = daemon_status()
+    facts["paired"] = daemon["paired"] if daemon else []
+    facts["adapters"] = adapter_facts()
+    kernel = _run_text(["journalctl", "-k", "--no-pager", "-o", "short-iso", "--since", since or "-1h"])
+    facts["controller_stuck"], facts["controller_stuck_last"] = controller_timeouts(kernel or "")
+    warnings = _run_text(["journalctl", "-u", "phonekeyd", "--no-pager", "-o", "short-iso", "-p", "warning",
+                          "-n", "8", "--since", since or "-1h"])
+    facts["daemon_warnings"] = [line for line in (warnings or "").splitlines() if line and not line.startswith("--")]
+
+    print(f"PhoneKey doctor — {datetime.datetime.now().isoformat(timespec='seconds')}")
+    print("-------")
+    print(f"Service: {facts['service'] or 'not installed'}"
+          + (f" since {since}, restarts: {props.get('NRestarts', '?')}" if since else ""))
+    print(f"Daemon: {'answering (' + daemon['mode'] + ' mode)' if daemon else 'not answering'}")
+    for d in facts["paired"]:
+        print(f"Phone: {d['name']} [{fingerprint(bytes.fromhex(d['device_id']))}] — "
+              f"{'connected' if d['connected'] else 'not connected'}")
+    for a in facts["adapters"]:
+        print(f"Adapter {a['name']}: {'on' if a['powered'] else 'off'}, "
+              f"{'scanning' if a['discovering'] else 'not scanning'}")
+    print("Bluetooth controller timeouts since service start: "
+          + (f"{facts['controller_stuck']}" + (f" (last {facts['controller_stuck_last']})"
+                                              if facts["controller_stuck_last"] else "")
+             if kernel is not None else "kernel log not readable (needs the adm group)"))
+    enabled = [p.name for p in pamconfig.enabled_files()] if pamconfig.PAM_DIR.is_dir() else []
+    print("PAM: " + (", ".join(enabled) if enabled else "not enabled"))
+    hints = diagnose(facts)
+    print()
+    print("Looks fine." if not hints else "\n".join(f"• {h}" for h in hints))
+    if facts["daemon_warnings"]:
+        print("\nRecent service warnings:")
+        for line in facts["daemon_warnings"]:
+            print("  " + line)
+    return 0
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """The system service logs to the journal; the development daemon logs to its terminal."""
     if subprocess_run(["systemctl", "is-active", "--quiet", "phonekeyd"]) == 0:
@@ -439,6 +547,9 @@ def build_parser() -> argparse.ArgumentParser:
     disable = sub.add_parser("disable", help="remove PhoneKey from all PAM files (works without the phone)")
     disable.add_argument("--dry-run", action="store_true", help="show the change without making it")
     disable.set_defaults(func=cmd_disable)
+
+    sub.add_parser("doctor", help="read-only health report (service, phone, adapter, kernel errors)") \
+        .set_defaults(func=cmd_doctor)
 
     logs = sub.add_parser("logs", help="show daemon logs")
     logs.add_argument("-n", "--lines", type=int, default=50)

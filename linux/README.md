@@ -41,6 +41,7 @@ linux/cli/phonekeyd -v          # terminal 1: the daemon, as your user
 linux/cli/phonekey pair         # terminal 2: then "Add computer" on the phone
 linux/cli/phonekey test         # authenticate on the phone
 linux/cli/phonekey status
+linux/cli/phonekey doctor       # read-only health report: service, phone, adapter, kernel errors
 linux/cli/phonekey devices
 linux/cli/phonekey unpair <prefix> | --all
 linux/cli/phonekey test --simulate   # protocol self-test with a software phone

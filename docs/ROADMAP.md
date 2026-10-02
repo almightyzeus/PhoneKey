@@ -48,7 +48,7 @@ refers to them rather than restating them.
 | 4 | End-to-end authentication (`phonekey test`) | **Complete** (2026-09-27) | No |
 | 5 | PAM + sudo | **Complete** (2026-09-29) | Installs the service; edits `/etc/pam.d/sudo` **after explicit confirmation** |
 | 6 | Cinnamon screen unlock | **Complete** (2026-09-29) | Edits `/etc/pam.d/cinnamon-screensaver` **after explicit confirmation** |
-| 7 | Reliability & resilience | Next | No new PAM changes |
+| 7 | Reliability & resilience | **In progress** ([RELIABILITY.md](RELIABILITY.md)) | No new PAM changes |
 | 8 | Pairing 2.0 / QR-assisted pairing | Planned | No |
 | 9 | Security hardening | Planned | No |
 | 10 | Android UX & device compatibility | Planned | No |
@@ -414,7 +414,8 @@ challenge, and none may extend a request past its TTL. Recovery paths must not
 add privileges. Diagnostic logging must follow T‑14.
 
 #### Deliverables
-Test matrix document with results; new automated tests; fixes; updated
+Test matrix with results ([RELIABILITY.md](RELIABILITY.md)); new automated
+tests (`test_resilience`, `test_scanning`); `phonekey doctor`; fixes; updated
 troubleshooting notes in the READMEs.
 
 #### Exit criteria
