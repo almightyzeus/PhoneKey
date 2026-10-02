@@ -29,6 +29,7 @@ import dbus
 import dbus.exceptions
 import dbus.service
 
+from . import scanning
 from .att import AttClient, AttError
 
 log = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ AGENT_PATH = "/dev/phonekey/agent"
 RETRY_COOLDOWN = 10.0  # seconds before retrying a device whose connection failed
 QUICK_RETRY = 1.0
 CONNECT_TIMEOUT = 20  # seconds for the LE connection and ATT setup
-DISCOVERY_WATCHDOG = 5  # seconds between checks that our LE scan is still running
+SCAN_TICK = 2  # seconds between scan-policy decisions (scanning.py) and adapter checks
 
 # Linux Bluetooth socket constants (include/net/bluetooth/bluetooth.h, l2cap.h)
 SOL_BLUETOOTH = 274
@@ -175,7 +176,8 @@ class BleCentral:
                  on_frame: Callable[[str, bytes, int | None], None],
                  on_disconnect: Callable[[str], None],
                  on_confirm: Confirm,
-                 on_progress: Callable[[str], None] = lambda message: None):
+                 on_progress: Callable[[str], None] = lambda message: None,
+                 missing: Callable[[], int] = lambda: 1):
         from gi.repository import GLib
 
         self._glib = GLib
@@ -184,6 +186,9 @@ class BleCentral:
         self._adapter = dbus.Interface(bus.get_object(BLUEZ, adapter_path), ADAPTER)
         self._on_connect, self._on_frame, self._on_disconnect = on_connect, on_frame, on_disconnect
         self._on_progress = on_progress  # pairing-window messages for the user
+        self._missing = missing  # paired phones not connected right now (from DaemonCore)
+        self._policy = scanning.ScanPolicy()
+        self._scan_mode = scanning.OFF  # what our discovery session is doing
         self._links: dict[str, _Link] = {}
         self._cooldown: dict[str, float] = {}
         self._pairing = False
@@ -197,39 +202,77 @@ class BleCentral:
                                       signal_name="InterfacesAdded")
         self._bus.add_signal_receiver(self._device_changed, dbus_interface=PROPERTIES,
                                       signal_name="PropertiesChanged", arg0=DEVICE, path_keyword="path")
-        try:
-            self._start_discovery()
-            log.info("scanning for PhoneKey phones")
-        except dbus.exceptions.DBusException as e:
-            # Bluetooth off or not ready yet (e.g. early at boot): the watchdog starts scanning later.
-            log.warning("cannot scan yet (%s); retrying every %d s", e.get_dbus_message(), DISCOVERY_WATCHDOG)
-        self._glib.timeout_add_seconds(DISCOVERY_WATCHDOG, self._discovery_watchdog)
+        log.info("looking for PhoneKey phones (scanning only while one is missing)")
+        self._glib.timeout_add_seconds(SCAN_TICK, self._tick)
+        self._update_scanning()
         on_ready()
 
-    def _start_discovery(self) -> None:
-        self._adapter.SetDiscoveryFilter({
-            "Transport": "le",
-            "UUIDs": dbus.Array([SERVICE_UUID, PAIRING_ADV_UUID], signature="s"),
-            "DuplicateData": dbus.Boolean(True),
-        })
-        self._adapter.StartDiscovery()
+    # ---- when to scan (policy in scanning.py) ---------------------------------
 
-    def _discovery_watchdog(self) -> bool:
-        """BlueZ ends our scan when Bluetooth is toggled or devices are removed; restart it.
+    def wake_scan(self) -> None:
+        """Someone needs a phone that is not connected (sudo, unlock, test): look now."""
+        self._policy.wake(time.monotonic())
+        self._update_scanning()
 
-        Also follows the adapter when it disappears (a USB adapter that resets
-        comes back as a new hciN)."""
+    def _tick(self) -> bool:
+        """Applies the scan policy; also follows the adapter when it disappears
+        (a USB adapter that resets comes back as a new hciN)."""
         try:
             if self._adapter_path not in self._adapter_paths():
                 self._switch_adapter()
-                return True
-            props = dbus.Interface(self._bus.get_object(BLUEZ, self._adapter_path), PROPERTIES)
-            if props.Get(ADAPTER, "Powered") and not props.Get(ADAPTER, "Discovering"):
-                self._start_discovery()
-                log.info("scanning restarted")
         except dbus.exceptions.DBusException as e:
-            log.debug("discovery watchdog: %s", e.get_dbus_message())
+            log.debug("adapter check: %s", e.get_dbus_message())
+        self._update_scanning()
         return True
+
+    def _update_scanning(self) -> None:
+        want = self._policy.decide(time.monotonic(), self._pairing, self._missing())
+        try:
+            props = dbus.Interface(self._bus.get_object(BLUEZ, self._adapter_path), PROPERTIES)
+            powered = bool(props.Get(ADAPTER, "Powered"))
+            discovering = bool(props.Get(ADAPTER, "Discovering"))
+        except dbus.exceptions.DBusException as e:
+            log.debug("scan state: %s", e.get_dbus_message())
+            return
+        if want == scanning.OFF:
+            if self._scan_mode != scanning.OFF:
+                self._stop_discovery()
+            return
+        if not powered:
+            self._scan_mode = scanning.OFF  # Bluetooth off: try again on a later tick
+            return
+        if want != self._scan_mode or not discovering:  # new mode, or BlueZ ended our session
+            self._start_discovery(pairing=want == scanning.PAIRING)
+            self._scan_mode = want
+
+    def _start_discovery(self, pairing: bool) -> None:
+        if pairing:
+            # Short window, phone on a fresh random address: report every advertisement.
+            discovery_filter = {"Transport": "le", "DuplicateData": dbus.Boolean(True),
+                                "UUIDs": dbus.Array([SERVICE_UUID, PAIRING_ADV_UUID], signature="s")}
+        else:
+            # Bursts: no UUID filter and no duplicate reports, so the kernel needs no
+            # periodic scan restarts; _consider() filters for PhoneKey phones itself.
+            discovery_filter = {"Transport": "le", "DuplicateData": dbus.Boolean(False)}
+        try:
+            if self._scan_mode != scanning.OFF:
+                self._adapter.StopDiscovery()  # switching filters needs a new session
+        except dbus.exceptions.DBusException:
+            pass
+        try:
+            self._adapter.SetDiscoveryFilter(discovery_filter)
+            self._adapter.StartDiscovery()
+            log.debug("scanning (%s)", "pairing" if pairing else "burst")
+        except dbus.exceptions.DBusException as e:
+            log.warning("cannot scan yet: %s", e.get_dbus_message())
+
+    def _stop_discovery(self) -> None:
+        self._scan_mode = scanning.OFF
+        try:
+            self._adapter.StopDiscovery()
+            log.debug("scanning stopped")
+        except dbus.exceptions.DBusException:
+            pass  # already stopped (e.g. Bluetooth turned off)
 
     def _adapter_paths(self) -> list[str]:
         return [str(p) for p, ifaces in self._managed_objects().items() if ADAPTER in ifaces]
@@ -245,16 +288,13 @@ class BleCentral:
             return
         self._adapter_path = paths[0]
         self._adapter = dbus.Interface(self._bus.get_object(BLUEZ, self._adapter_path), ADAPTER)
-        self._start_discovery()
-        log.info("scanning for PhoneKey phones on %s", self._adapter_path)
+        self._scan_mode = scanning.OFF  # the old adapter's session is gone
+        log.info("using Bluetooth adapter %s", self._adapter_path)
 
     def stop(self) -> None:
         if self._agent_registered:
             self.set_pairing_mode(False)
-        try:
-            self._adapter.StopDiscovery()
-        except dbus.exceptions.DBusException:
-            pass
+        self._stop_discovery()
         for path in list(self._links):
             self._close(path)
 
@@ -271,6 +311,7 @@ class BleCentral:
                 self._agent_registered = False
         except dbus.exceptions.DBusException as e:
             log.warning("pairing agent: %s", e.get_dbus_message())
+        self._update_scanning()
         if enabled:
             self._cooldown.clear()
             for path, ifaces in self._managed_objects().items():
@@ -466,6 +507,7 @@ class BleCentral:
         self._close(path)
         if was_ready:
             self._on_disconnect(path)
+            self._update_scanning()  # a phone just went missing: start looking at once
 
     def _close(self, path: str) -> None:
         link = self._links.pop(path, None)

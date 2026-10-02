@@ -203,6 +203,12 @@ Each threat names the mechanism that defeats it and the tests that show it
   advertisement with *Invalid Parameters* (D‑11).
 - Pairing confirmation is handled by PhoneKey's own agent during the pairing
   window (D‑1); the desktop's default agent (Blueman) is not involved.
+- Continuous LE discovery made the MVP adapter (Realtek RTL8822CU) stop
+  answering "disable scanning" after an hour or two (`Opcode 0x2042 failed:
+  -110`), which also broke the kernel's background scan that other devices,
+  such as a BLE mouse, need to reconnect. The daemon therefore scans only
+  while a paired phone is missing, in short bursts (`scanning.py`), and
+  continuously only during a pairing window.
 - A USB Bluetooth adapter can reset and come back as a new `hciN`. The daemon
   notices within 5 s, drops its links and scans on the new adapter.
 - `sudo` runs PAM as **root**. `cinnamon-screensaver` runs PAM **as the

@@ -26,6 +26,7 @@ class Transport(Protocol):
     def send(self, peer_id: str, frame: bytes) -> None: ...
     def set_pairing_mode(self, enabled: bool) -> None: ...
     def drop(self, peer_id: str) -> None: ...
+    def wake_scan(self) -> None: ...
 
 
 class Scheduler(Protocol):
@@ -77,6 +78,11 @@ class DaemonCore:
 
     def connected_device_ids(self) -> set[bytes]:
         return {p.device_id for p in self._peers.values() if p.device_id is not None}
+
+    def missing_devices(self) -> int:
+        """Paired phones without a live, greeted link (the BLE layer scans only while > 0)."""
+        connected = self.connected_device_ids()
+        return sum(1 for r in self.verifier.registry.all() if r.device_id not in connected)
 
     def status(self) -> Event:
         connected = self.connected_device_ids()
@@ -203,6 +209,8 @@ class DaemonCore:
         connected = self.connected_device_ids()
         candidates = [r for r in self.verifier.registry.for_account(account) if r.device_id in connected]
         if not candidates:
+            if self.verifier.registry.for_account(account):
+                self._transport.wake_scan()  # look for the phone now, so a retry can succeed
             on_event({"result": "unavailable", "reason": "no paired phone connected"})
             return None
         device = candidates[0]

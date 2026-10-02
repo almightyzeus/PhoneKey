@@ -383,16 +383,20 @@ exists, the phase **verifies** it (it is not assumed to work).
 | 22 | No permanently stuck Bluetooth or session state | Not systematically tested |
 | 23 | Recovery without a full machine reboot | Not systematically tested |
 | 24 | Useful diagnostic logging without secrets | T‑14 manual review only |
+| 25 | Coexistence with other Bluetooth devices (mouse, headphones) on the same adapter | Continuous scanning made the MVP adapter hang on "disable scanning" (`Opcode 0x2042 failed: -110`, hundreds per boot from 2026-10-01) and broke a BLE mouse's reconnection. Since 2026-10-02, scanning runs only while a paired phone is missing, in bursts (`scanning.py`). Verify: a full day of normal use with zero such kernel errors |
 
-Known issues to address: the reconnect gap during pairing (23 s observed), and
-BlueZ/NetworkManager classic-Bluetooth activity right after bonding.
+Known issues to address: the reconnect gap during pairing (23 s observed);
+BlueZ/NetworkManager classic-Bluetooth activity right after bonding; and the
+reconnect delay that burst scanning adds while the phone is away (up to about
+2 minutes after 5 minutes of absence; a sudo or unlock attempt triggers an
+immediate scan).
 
 #### Non-goals
 New authentication surfaces (login, SSH); protocol changes other than
 reliability fixes; new pairing UX.
 
 #### Acceptance criteria
-- A written **fault-injection test matrix** covers conditions 1–24. For each:
+- A written **fault-injection test matrix** covers conditions 1–25. For each:
   the expected behaviour, how to reproduce it, and the recorded result on the
   test hardware (Linux Mint 22.3 laptop, Motorola Edge 50 Fusion).
 - Every condition ends in either successful PhoneKey authentication or the
@@ -414,7 +418,7 @@ Test matrix document with results; new automated tests; fixes; updated
 troubleshooting notes in the READMEs.
 
 #### Exit criteria
-All 24 conditions pass or have a documented, accepted limitation; the soak is
+All 25 conditions pass or have a documented, accepted limitation; the soak is
 complete; the user signs off on daily-use reliability.
 
 ### Phase 8 — Pairing 2.0 / QR-assisted pairing

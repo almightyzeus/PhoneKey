@@ -69,9 +69,15 @@ fingerprint.
   (`BT_SECURITY_HIGH`).
 - **Keepalive:** a `STATUS` exchange every 20 s. A phone that stops answering is
   disconnected and reconnected.
-- **BlueZ's role is limited** to LE scanning (restarted if BlueZ stops it) and
-  the one-time bonding. The pairing agent exists only during the pairing
-  window, is never the default agent, and accepts only numeric comparison.
+- **BlueZ's role is limited** to LE scanning and the one-time bonding. The
+  pairing agent exists only during the pairing window, is never the default
+  agent, and accepts only numeric comparison.
+- **Scanning only while needed** (`scanning.py`): none while every paired phone
+  is connected; short bursts while one is missing (about 12 s every 30 s, then
+  every 2 minutes after 5 minutes); an immediate burst when sudo or unlock
+  needs the phone; continuous only while `phonekey pair` is open. Constant
+  scanning made this laptop's Realtek adapter hang and broke a Bluetooth
+  mouse's reconnection.
 
 ## Installing as a system service
 

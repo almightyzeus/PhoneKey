@@ -83,6 +83,7 @@ class FakeTransport:
         self.pairing_mode = False
         self.frames = 0
         self.dropped = []
+        self.woken = 0
 
     def send(self, peer_id, frame):
         self.frames += 1
@@ -95,6 +96,9 @@ class FakeTransport:
 
     def drop(self, peer_id):
         self.dropped.append(peer_id)
+
+    def wake_scan(self):
+        self.woken += 1
 
 
 class CoreTestCase(VerifierTestCase):
@@ -197,6 +201,20 @@ class AuthOverLinkTest(CoreTestCase):
 
     def test_not_sent_returns_no_request_id(self):
         self.assertIsNone(self.core.authenticate(ACCOUNT, "phonekey.test", "test-host", self.events.append))
+
+    def test_request_without_connected_phone_wakes_scanning(self):
+        self.authenticate()
+        self.assertEqual("unavailable", self.events[-1]["result"])
+        self.assertEqual(1, self.transport.woken)
+        self.core.authenticate("someone-else", "phonekey.test", "test-host", self.events.append)
+        self.assertEqual(1, self.transport.woken)  # nothing paired for that account: no scan
+
+    def test_missing_devices_counts_paired_phones_without_link(self):
+        self.assertEqual(1, self.core.missing_devices())
+        phone = self.connect(self.phone)
+        self.assertEqual(0, self.core.missing_devices())
+        self.disconnect(phone)
+        self.assertEqual(1, self.core.missing_devices())
 
     def test_reconnect_then_success(self):
         phone = self.connect(self.phone)

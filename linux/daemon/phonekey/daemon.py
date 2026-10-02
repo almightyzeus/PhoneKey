@@ -340,6 +340,9 @@ class _Transport:
     def drop(self, peer_id):
         self.central.drop(peer_id)
 
+    def wake_scan(self):
+        self.central.wake_scan()
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="phonekeyd", description="PhoneKey BLE verifier daemon (pre-alpha).")
@@ -374,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     transport = _Transport()
     core = DaemonCore(verifier, transport, GLibScheduler())
     transport.central = BleCentral(bus, adapter, core.on_connect, core.on_frame, core.on_disconnect,
-                                   core.on_bond_confirmation, core.pairing_progress)
+                                   core.on_bond_confirmation, core.pairing_progress, core.missing_devices)
     ipc = IpcServer(args.socket, core, system_mode=args.system, hostname=hostname,
                     presence_check=presence.checker(presence.Logind(bus)))
     loop = GLib.MainLoop()
